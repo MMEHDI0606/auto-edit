@@ -83,12 +83,95 @@ def detect_freeze(shot_frames: list[np.ndarray], audio_active: bool) -> ShotEffe
     return ShotEffect(type=EffectType.freeze, params={"duration_f": best_len + 1}, confidence=1.0)
 
 
-def detect_speed_ramp(motion_magnitude_series, audio_pitch_series) -> ShotEffect | None:
+SPEED_RAMP_CONFIDENCE = 0.55  # always well below 1.0 - approximate by design, per spec sec 8.3
+SPEED_RAMP_MIN_FIT_IMPROVEMENT = 0.2  # a breakpoint must cut squared error by >=20% vs. a single line
+SPEED_RAMP_MIN_PITCH_SHIFT_FRACTION = 0.02  # negligible pitch shift => not a real speed ramp
+
+
+def _segment_sse(t: np.ndarray, v: np.ndarray, lo: int, hi: int) -> float:
+    if hi - lo < 2:
+        return 0.0
+    seg_t, seg_v = t[lo:hi], v[lo:hi]
+    pred = np.polyval(np.polyfit(seg_t, seg_v, 1), seg_t)
+    return float(np.sum((seg_v - pred) ** 2))
+
+
+def _best_breakpoints(t: np.ndarray, v: np.ndarray, n_breakpoints: int) -> tuple[list[int], float]:
+    """Grid search over candidate breakpoint frame(s) minimizing total
+    piecewise-linear squared error - simple exhaustive search since a shot's
+    frame count is small (a handful of seconds at most)."""
+    n = len(v)
+    if n_breakpoints == 1:
+        best_err, best_bp = float("inf"), n // 2
+        for bp in range(2, n - 2):
+            err = _segment_sse(t, v, 0, bp) + _segment_sse(t, v, bp, n)
+            if err < best_err:
+                best_err, best_bp = err, bp
+        return [best_bp], best_err
+    if n_breakpoints == 2:
+        best_err, best_bps = float("inf"), [n // 3, 2 * n // 3]
+        for bp1 in range(2, n - 4):
+            for bp2 in range(bp1 + 2, n - 2):
+                err = _segment_sse(t, v, 0, bp1) + _segment_sse(t, v, bp1, bp2) + _segment_sse(t, v, bp2, n)
+                if err < best_err:
+                    best_err, best_bps = err, [bp1, bp2]
+        return best_bps, best_err
+    raise ValueError("only 1 or 2 breakpoints supported, per INSTRUCTIONS.md Unit 1.14")
+
+
+def detect_speed_ramp(motion_magnitude_series: list[float], audio_pitch_series: list[float]) -> ShotEffect | None:
     """Motion magnitude discontinuity within a shot + audio pitch/tempo
     shift. Approximate with 2-3 linear segments (spec sec 8.3: information
     is genuinely destroyed by a speed ramp; do not attempt full curve
-    recovery) and flag low confidence."""
-    raise NotImplementedError
+    recovery) and flag low confidence.
+
+    A true speed ramp changes BOTH apparent motion speed and audio pitch
+    together (it's a played-back speed change) - a motion breakpoint with
+    no corresponding pitch shift is something else (e.g. a whip pan or a
+    subject suddenly moving), not a speed ramp, and must return None.
+    """
+    if len(motion_magnitude_series) < 6:
+        return None
+
+    v = np.asarray(motion_magnitude_series, dtype=np.float64)
+    n = len(v)
+    t = np.arange(n, dtype=np.float64)
+
+    baseline_sse = _segment_sse(t, v, 0, n)
+
+    breakpoints, total_sse = _best_breakpoints(t, v, 1)
+    improvement = (baseline_sse - total_sse) / (baseline_sse + 1e-9)
+
+    if improvement < SPEED_RAMP_MIN_FIT_IMPROVEMENT and n >= 8:
+        breakpoints_2, total_sse_2 = _best_breakpoints(t, v, 2)
+        if total_sse_2 < total_sse:
+            breakpoints, total_sse = breakpoints_2, total_sse_2
+            improvement = (baseline_sse - total_sse) / (baseline_sse + 1e-9)
+
+    if improvement < SPEED_RAMP_MIN_FIT_IMPROVEMENT:
+        return None  # a straight line already explains the motion fine - no ramp
+
+    if not audio_pitch_series or len(audio_pitch_series) < 2:
+        return None  # can't confirm the "pitch shifts too" half of the signal - don't guess
+
+    pitch = np.asarray(audio_pitch_series, dtype=np.float64)
+    pitch_resampled = np.interp(np.linspace(0, len(pitch) - 1, n), np.arange(len(pitch)), pitch)
+    first_bp = sorted(breakpoints)[0]
+    pre_pitch = float(np.mean(pitch_resampled[:first_bp]))
+    post_pitch = float(np.mean(pitch_resampled[first_bp:]))
+    pitch_shift_fraction = abs(post_pitch - pre_pitch) / (abs(pre_pitch) + 1e-6)
+    if pitch_shift_fraction < SPEED_RAMP_MIN_PITCH_SHIFT_FRACTION:
+        return None
+
+    bounds = [0, *sorted(breakpoints), n]
+    segments = []
+    for lo, hi in zip(bounds[:-1], bounds[1:]):
+        if hi - lo < 2:
+            continue
+        rate = float(np.polyfit(t[lo:hi], v[lo:hi], 1)[0])
+        segments.append({"t_in": int(lo), "t_out": int(hi), "rate": rate})
+
+    return ShotEffect(type=EffectType.speed_ramp, params={"segments": segments}, confidence=SPEED_RAMP_CONFIDENCE)
 
 
 def detect_rgb_split(shot_frames) -> ShotEffect | None:
