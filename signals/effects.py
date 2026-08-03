@@ -308,10 +308,50 @@ def detect_blur_pulse(shot_frames: list[np.ndarray], *, fps: int = 30) -> ShotEf
     )
 
 
-def grade_stats(shot_frames) -> Grade:
+# Reference constants representing "neutral"/"normal" - judgment calls per
+# INSTRUCTIONS.md Unit 1.16 ("exact scale is a judgment call, document
+# whatever constant you pick"), not derived from a calibration set. Retune
+# against real footage once the golden set exists.
+GRADE_NEUTRAL_CONTRAST_STD = 50.0  # reference luminance std-dev (0-255 scale) for "normal" contrast
+GRADE_NEUTRAL_SATURATION = 90.0  # reference mean HSV saturation (0-255) for "normal" saturation
+GRADE_TEMP_SCALE = 5.0  # scales raw (mean_R - mean_B), roughly +-25, into the spec example's ~-500..500 "temp" range
+GRADE_SAMPLE_COUNT = 5  # evenly-spaced frames per shot, per spec sec 3.5
+
+
+def grade_stats(shot_frames: list[np.ndarray]) -> Grade:
     """Per-shot histogram stats vs a neutral reference. Descriptive only -
-    see module docstring. Must return Grade(lut_available=False)."""
-    raise NotImplementedError
+    see module docstring. Must return Grade(lut_available=False).
+
+    This is a RELATIVE signal (contrast=1.0/saturation=1.0/temp=0.0 means
+    "matches the neutral reference"), not a colorimetrically-calibrated
+    measurement - per INSTRUCTIONS.md Unit 1.16, there is no absolute
+    accuracy bar here, only "do the numbers move in the expected direction."
+    """
+    if not shot_frames:
+        return Grade(lut_available=False)
+
+    n = len(shot_frames)
+    sample_count = min(GRADE_SAMPLE_COUNT, n)
+    indices = np.linspace(0, n - 1, sample_count).astype(int)
+
+    lum_stds, saturations, red_means, blue_means = [], [], [], []
+    for i in indices:
+        frame = shot_frames[i]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        lum_stds.append(float(np.std(gray)))
+
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        saturations.append(float(np.mean(hsv[:, :, 1])))
+
+        b, _g, r = cv2.split(frame)
+        blue_means.append(float(np.mean(b)))
+        red_means.append(float(np.mean(r)))
+
+    contrast = float(np.mean(lum_stds)) / GRADE_NEUTRAL_CONTRAST_STD
+    saturation = float(np.mean(saturations)) / GRADE_NEUTRAL_SATURATION
+    temp = (float(np.mean(red_means)) - float(np.mean(blue_means))) * GRADE_TEMP_SCALE
+
+    return Grade(contrast=contrast, saturation=saturation, temp=temp, lut_available=False)
 
 
 def detect_mask_cutout(shot_frames, *, enabled: bool) -> ShotEffect | None:
