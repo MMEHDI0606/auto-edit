@@ -62,8 +62,25 @@ def extract_sections(wav_path: Path) -> list[dict]:
 
 
 def transcribe(wav_path: Path) -> list[dict]:
-    """faster-whisper with word timestamps -> [{t, word, conf}, ...]."""
-    raise NotImplementedError
+    """faster-whisper with word timestamps -> [{t, word, conf}, ...].
+
+    Model/device are CPU-friendly defaults (base, int8) - a GPU box should
+    pass device="cuda", compute_type="float16" instead; this function
+    always uses the CPU-friendly config since Phase 1 targets a CLI run
+    with no GPU assumption. Model instantiation is NOT cached at module
+    level - trace_builder.py (Unit 1.17) calls this once per video, and a
+    per-call model would only matter for a hot loop, which this isn't.
+    """
+    from faster_whisper import WhisperModel
+
+    model = WhisperModel("base", device="cpu", compute_type="int8")
+    segments, _info = model.transcribe(str(wav_path), word_timestamps=True)
+
+    words: list[dict] = []
+    for segment in segments:
+        for word in segment.words or []:
+            words.append({"t": float(word.start), "word": word.word.strip(), "conf": float(word.probability)})
+    return words
 
 
 def separate_speech_music(wav_path: Path) -> tuple[Path, Path]:
