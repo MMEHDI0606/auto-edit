@@ -1,0 +1,33 @@
+{
+  "duration_s": 3.5,
+  "fps": 30,
+  "w": 1080,
+  "h": 1920,
+  "cuts_s": [
+    1.2,
+    2.0
+  ],
+  "shot_colors": [
+    "red",
+    "blue",
+    "green"
+  ],
+  "text_layers": [
+    {
+      "string": "HOOK TEXT",
+      "t_in": 0.2,
+      "t_out": 1.15
+    }
+  ],
+  "beat_grid_s": [
+    0.0,
+    0.5,
+    1.0,
+    1.5,
+    2.0,
+    2.5,
+    3.0,
+    3.5
+  ],
+  "tempo_bpm": 120.0
+}

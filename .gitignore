@@ -12,3 +12,10 @@ data/
 eval/reports/
 node_modules/
 .env
+
+# Reference-only clones (each has its own .git - not part of this repo;
+# cloned for design/skill reference, not vendored code).
+skills/
+
+# Local Claude Code tool state, not project source.
+.claude/
