@@ -385,11 +385,80 @@ def font_match(glyph_crop, *, font_library_dir: Path) -> tuple[str, float]:
     raise NotImplementedError
 
 
-def classify_role(layer: dict, *, transcript_words: list[dict], music_active: bool) -> tuple[str, float]:
+_CAPTION_TRANSCRIPT_SIM_THRESHOLD = 0.6
+_WATERMARK_CORNER_FRACTION = 0.15
+_WATERMARK_PERSISTENCE_FRACTION = 0.9
+_HOOK_TITLE_EARLY_FRACTION = 0.2
+_CTA_LATE_FRACTION = 0.85
+_CTA_MAX_WORDS = 3
+
+
+def classify_role(
+    layer: dict,
+    *,
+    transcript_words: list[dict],
+    music_active: bool,
+    video_duration_s: float | None = None,
+    median_size_rel: float | None = None,
+) -> tuple[str, float]:
     """caption_burnin vs lyric vs hook_title/label/cta/watermark - see
     module docstring. Requires transcript_words (faster-whisper output,
-    from audio.py) and a music-active signal to disambiguate speech vs song."""
-    raise NotImplementedError
+    from audio.py) and a music-active signal to disambiguate speech vs song.
+
+    Decision order matters (first match wins), per INSTRUCTIONS.md Unit 1.11:
+      1. watermark   - bottom/corner position, persists near the whole clip
+      2. caption_burnin - OCR string matches OVERLAPPING transcript words
+         (speech_active, derived here from "any transcript word falls in
+         this layer's time window" - there's no separate speech-stem-RMS
+         input to this function) AND that similarity is high
+      3. lyric       - music is active and speech is NOT (no overlapping
+         transcript words) - this is the concrete guard against the spec
+         sec 8.3 "burned-in captions vs speech" confusion
+      4. hook_title  - early in the clip AND prominently sized
+      5. cta         - short string, near the end (best-effort heuristic)
+      6. label       - default
+
+    Signature extended beyond the stub with `video_duration_s` and
+    `median_size_rel` (both needed for the hook_title/cta checks the
+    module docstring itself describes) - no caller existed yet to break.
+    """
+    t_in, t_out = layer["t_in"], layer["t_out"]
+    box = layer.get("box")
+    string = layer.get("string", "")
+
+    if box is not None and video_duration_s:
+        x, y, w, h = box
+        in_corner = (x < _WATERMARK_CORNER_FRACTION or x + w > 1 - _WATERMARK_CORNER_FRACTION) and (
+            y + h > 1 - _WATERMARK_CORNER_FRACTION
+        )
+        persists = (t_out - t_in) >= _WATERMARK_PERSISTENCE_FRACTION * video_duration_s
+        if in_corner and persists:
+            return "watermark", 0.9
+
+    overlapping_words = [w for w in transcript_words if t_in <= w["t"] <= t_out]
+    speech_active = len(overlapping_words) > 0
+    overlapping_text = " ".join(w["word"] for w in overlapping_words)
+    ocr_transcript_sim = (
+        difflib.SequenceMatcher(None, string.lower(), overlapping_text.lower()).ratio() if overlapping_text else 0.0
+    )
+
+    if ocr_transcript_sim >= _CAPTION_TRANSCRIPT_SIM_THRESHOLD and speech_active:
+        return "caption_burnin", min(1.0, 0.5 + ocr_transcript_sim / 2)
+
+    if music_active and not speech_active:
+        return "lyric", 0.7
+
+    if box is not None and video_duration_s and median_size_rel is not None:
+        is_early = t_in <= _HOOK_TITLE_EARLY_FRACTION * video_duration_s
+        is_prominent = box[3] >= median_size_rel
+        if is_early and is_prominent:
+            return "hook_title", 0.7
+
+    word_count = len(string.split())
+    if video_duration_s and word_count <= _CTA_MAX_WORDS and t_in >= _CTA_LATE_FRACTION * video_duration_s:
+        return "cta", 0.5
+
+    return "label", 0.4
 
 
 def extract_text_layers(normalized_video_path: Path, *, transcript_words: list[dict]) -> list[TextLayer]:

@@ -86,8 +86,28 @@ def transcribe(wav_path: Path) -> list[dict]:
 def separate_speech_music(wav_path: Path) -> tuple[Path, Path]:
     """Demucs stem split -> (speech_stem_path, music_stem_path). Used so
     text.py's role classifier can tell captions (matches speech) from
-    lyrics (matches music, not speech) apart."""
-    raise NotImplementedError
+    lyrics (matches music, not speech) apart.
+
+    Real, somewhat slow step (seconds to low-minutes per video on CPU,
+    per spec sec 8.5 - the model itself, not the shell-out, dominates).
+    Requires the `audio-sep` optional dependency group (demucs) - not
+    imported/required by any other function in this module.
+    """
+    import subprocess
+    import sys
+
+    out_dir = wav_path.parent / "demucs_out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    subprocess.run(
+        [sys.executable, "-m", "demucs", "--two-stems=vocals", "-o", str(out_dir), str(wav_path)],
+        check=True, capture_output=True, text=True,
+    )
+
+    stem_dir = out_dir / "htdemucs" / wav_path.stem
+    speech_stem_path = stem_dir / "vocals.wav"
+    music_stem_path = stem_dir / "no_vocals.wav"
+    return speech_stem_path, music_stem_path
 
 
 def compute_beat_lock(cut_times_s: list[float], beat_grid_s: list[float]) -> tuple[float, int]:
