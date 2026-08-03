@@ -1,0 +1,43 @@
+[project]
+name = "recut"
+version = "0.1.0"
+description = "Decompose short-form video edits into a machine-readable recipe and re-render with different footage."
+requires-python = ">=3.11"
+readme = "RECUT_SPEC.md"
+
+# NOTE: dependency versions are intentionally left unpinned in this scaffold.
+# Pin them for real in BUILD_ORDER.md Phase 0 (this matters more than usual
+# here - yt-dlp, PySceneDetect, and VLM SDKs are exactly the moving parts
+# the spec itself flags as fragile, sec 8.2/8.4). Do not add a dependency
+# to this list without also adding it to eval/run.py's regression-gate
+# awareness (a dependency bump is a reason to re-run the golden set).
+dependencies = [
+    "pydantic>=2.0",
+    "fastapi",
+    "uvicorn",
+    "celery",
+    "redis",
+    "opencv-python",
+    "scenedetect",
+    "librosa",
+    "faster-whisper",
+    "yt-dlp",
+    "numpy",
+    "python-multipart",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "ruff", "mypy"]
+ocr = ["paddleocr"]  # or easyocr - pick one in Phase 1, don't ship both
+local-vlm = []  # fill in when semantics/providers/local_provider.py is implemented
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

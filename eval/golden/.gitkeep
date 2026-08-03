@@ -1,0 +1,13 @@
+Hand-annotated golden set lives here (30 videos across genres per
+RECUT_SPEC.md sec 12: talking head, product, dance/trend, text-heavy
+tutorial, cinematic b-roll). Do not commit actual third-party video files
+into git - store references/hashes here and pull media from ingest/cache
+at eval time (see DESIGN_NOTES.md "Golden set storage").
+
+Layout convention (create when Phase 1 starts):
+  eval/golden/<video_id>/source.ref        (URL or hash, not the file)
+  eval/golden/<video_id>/annotations.json  (hand-labeled ground truth,
+                                             matching a subset of the
+                                             EditTrace shape: cut times,
+                                             transition types, text layer
+                                             timing/strings)

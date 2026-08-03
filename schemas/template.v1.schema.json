@@ -1,0 +1,347 @@
+{
+  "$defs": {
+    "AudioRef": {
+      "description": "Audio is a REFERENCE, never a muxed file. See DESIGN_NOTES.md,\n'Rights posture', and spec sec 8.1 - this is a hard legal requirement,\nnot a style choice. Nothing in compiler/ or render/ may embed a\nthird-party commercial track into an output file.",
+      "properties": {
+        "platform": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Platform"
+        },
+        "track_title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Track Title"
+        },
+        "artist": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artist"
+        },
+        "start_offset_s": {
+          "default": 0.0,
+          "title": "Start Offset S",
+          "type": "number"
+        },
+        "beat_grid_s": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Beat Grid S",
+          "type": "array"
+        },
+        "embed_permitted": {
+          "const": false,
+          "default": false,
+          "title": "Embed Permitted",
+          "type": "boolean"
+        }
+      },
+      "title": "AudioRef",
+      "type": "object"
+    },
+    "DurationFlex": {
+      "properties": {
+        "min_s": {
+          "title": "Min S",
+          "type": "number"
+        },
+        "max_s": {
+          "title": "Max S",
+          "type": "number"
+        },
+        "snap": {
+          "default": "none",
+          "enum": [
+            "none",
+            "beat"
+          ],
+          "title": "Snap",
+          "type": "string"
+        }
+      },
+      "required": [
+        "min_s",
+        "max_s"
+      ],
+      "title": "DurationFlex",
+      "type": "object"
+    },
+    "Easing": {
+      "enum": [
+        "linear",
+        "easeIn",
+        "easeOut",
+        "easeInOut",
+        "spring"
+      ],
+      "title": "Easing",
+      "type": "string"
+    },
+    "MotionCurve": {
+      "description": "Fit result for camera motion within one shot (spec sec 3.2).",
+      "properties": {
+        "primitive": {
+          "$ref": "#/$defs/MotionPrimitive"
+        },
+        "from_scale": {
+          "default": 1.0,
+          "title": "From Scale",
+          "type": "number"
+        },
+        "to_scale": {
+          "default": 1.0,
+          "title": "To Scale",
+          "type": "number"
+        },
+        "pan_tx": {
+          "default": 0.0,
+          "title": "Pan Tx",
+          "type": "number"
+        },
+        "pan_ty": {
+          "default": 0.0,
+          "title": "Pan Ty",
+          "type": "number"
+        },
+        "easing": {
+          "$ref": "#/$defs/Easing",
+          "default": "linear"
+        },
+        "residual": {
+          "description": "Fit error; above threshold -> store raw keyframes instead",
+          "title": "Residual",
+          "type": "number"
+        },
+        "raw_keyframes": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Populated only when residual exceeds the primitive-fit threshold",
+          "title": "Raw Keyframes"
+        }
+      },
+      "required": [
+        "primitive",
+        "residual"
+      ],
+      "title": "MotionCurve",
+      "type": "object"
+    },
+    "MotionPrimitive": {
+      "enum": [
+        "punch_in",
+        "slow_push",
+        "zoom_out_reveal",
+        "pan",
+        "whip",
+        "static",
+        "keyframed"
+      ],
+      "title": "MotionPrimitive",
+      "type": "string"
+    },
+    "Slot": {
+      "properties": {
+        "slot_id": {
+          "title": "Slot Id",
+          "type": "string"
+        },
+        "order": {
+          "title": "Order",
+          "type": "integer"
+        },
+        "duration_s": {
+          "title": "Duration S",
+          "type": "number"
+        },
+        "duration_flex": {
+          "$ref": "#/$defs/DurationFlex"
+        },
+        "requirements": {
+          "$ref": "#/$defs/SlotRequirements"
+        },
+        "applied": {
+          "$ref": "#/$defs/SlotApplied"
+        },
+        "human_instruction": {
+          "description": "THE product surface - shown to the end user verbatim",
+          "title": "Human Instruction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slot_id",
+        "order",
+        "duration_s",
+        "duration_flex",
+        "requirements",
+        "applied",
+        "human_instruction"
+      ],
+      "title": "Slot",
+      "type": "object"
+    },
+    "SlotApplied": {
+      "properties": {
+        "motion": {
+          "$ref": "#/$defs/MotionCurve"
+        },
+        "grade_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grade Ref"
+        },
+        "out_transition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Out Transition"
+        }
+      },
+      "required": [
+        "motion"
+      ],
+      "title": "SlotApplied",
+      "type": "object"
+    },
+    "SlotRequirements": {
+      "properties": {
+        "orientation": {
+          "default": "vertical",
+          "enum": [
+            "vertical",
+            "horizontal",
+            "square"
+          ],
+          "title": "Orientation",
+          "type": "string"
+        },
+        "shot_type_pref": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Shot Type Pref",
+          "type": "array"
+        },
+        "needs_face": {
+          "default": false,
+          "title": "Needs Face",
+          "type": "boolean"
+        },
+        "motion_pref": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Motion Pref"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        }
+      },
+      "title": "SlotRequirements",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "template_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Template Version",
+      "type": "string"
+    },
+    "source_trace_hash": {
+      "title": "Source Trace Hash",
+      "type": "string"
+    },
+    "slots": {
+      "items": {
+        "$ref": "#/$defs/Slot"
+      },
+      "title": "Slots",
+      "type": "array"
+    },
+    "audio_ref": {
+      "$ref": "#/$defs/AudioRef"
+    },
+    "confidence_flags": {
+      "description": "Human-readable list of low-confidence approximations (font guesses, speed-ramp linearization, etc) surfaced in the render report",
+      "items": {
+        "type": "string"
+      },
+      "title": "Confidence Flags",
+      "type": "array"
+    }
+  },
+  "required": [
+    "source_trace_hash",
+    "slots",
+    "audio_ref"
+  ],
+  "title": "Template",
+  "type": "object"
+}

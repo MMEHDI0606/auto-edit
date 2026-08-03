@@ -1,0 +1,750 @@
+{
+  "$defs": {
+    "AudioSection": {
+      "properties": {
+        "t_in": {
+          "title": "T In",
+          "type": "number"
+        },
+        "t_out": {
+          "title": "T Out",
+          "type": "number"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t_in",
+        "t_out",
+        "label"
+      ],
+      "title": "AudioSection",
+      "type": "object"
+    },
+    "AudioTrace": {
+      "properties": {
+        "tempo_bpm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tempo Bpm"
+        },
+        "beat_grid_s": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Beat Grid S",
+          "type": "array"
+        },
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/AudioSection"
+          },
+          "title": "Sections",
+          "type": "array"
+        },
+        "beat_lock_ratio": {
+          "default": 0.0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Beat Lock Ratio",
+          "type": "number"
+        },
+        "median_cut_offset_frames": {
+          "default": 0,
+          "title": "Median Cut Offset Frames",
+          "type": "integer"
+        },
+        "transcript_words": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "faster-whisper word-level output, [{t, word, conf}]",
+          "title": "Transcript Words"
+        }
+      },
+      "title": "AudioTrace",
+      "type": "object"
+    },
+    "Easing": {
+      "enum": [
+        "linear",
+        "easeIn",
+        "easeOut",
+        "easeInOut",
+        "spring"
+      ],
+      "title": "Easing",
+      "type": "string"
+    },
+    "EffectType": {
+      "enum": [
+        "freeze",
+        "speed_ramp",
+        "rgb_split",
+        "flash",
+        "blur_pulse",
+        "shake",
+        "overlay_grain",
+        "mask_cutout"
+      ],
+      "title": "EffectType",
+      "type": "string"
+    },
+    "EvidenceMeta": {
+      "properties": {
+        "cut_detector": {
+          "title": "Cut Detector",
+          "type": "string"
+        },
+        "ocr_fps": {
+          "title": "Ocr Fps",
+          "type": "integer"
+        },
+        "flow_method": {
+          "title": "Flow Method",
+          "type": "string"
+        },
+        "model_versions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "pinned tool/library versions used for this trace",
+          "title": "Model Versions",
+          "type": "object"
+        }
+      },
+      "required": [
+        "cut_detector",
+        "ocr_fps",
+        "flow_method"
+      ],
+      "title": "EvidenceMeta",
+      "type": "object"
+    },
+    "Grade": {
+      "description": "Color grade STATISTICS only.\n\nDESIGN DECISION (open question #3 in the original spec, resolved here):\nv1 stores grade stats and does NOT synthesize/apply a 3D LUT. The\n`lut_available` flag exists so render/ can make an\nexplicit choice later without a schema change. Do not add LUT\nsynthesis logic until this flag's default is deliberately flipped.",
+      "properties": {
+        "contrast": {
+          "default": 1.0,
+          "title": "Contrast",
+          "type": "number"
+        },
+        "saturation": {
+          "default": 1.0,
+          "title": "Saturation",
+          "type": "number"
+        },
+        "temp": {
+          "default": 0.0,
+          "title": "Temp",
+          "type": "number"
+        },
+        "lut_available": {
+          "default": false,
+          "title": "Lut Available",
+          "type": "boolean"
+        },
+        "lut_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lut Ref"
+        }
+      },
+      "title": "Grade",
+      "type": "object"
+    },
+    "MotionCurve": {
+      "description": "Fit result for camera motion within one shot (spec sec 3.2).",
+      "properties": {
+        "primitive": {
+          "$ref": "#/$defs/MotionPrimitive"
+        },
+        "from_scale": {
+          "default": 1.0,
+          "title": "From Scale",
+          "type": "number"
+        },
+        "to_scale": {
+          "default": 1.0,
+          "title": "To Scale",
+          "type": "number"
+        },
+        "pan_tx": {
+          "default": 0.0,
+          "title": "Pan Tx",
+          "type": "number"
+        },
+        "pan_ty": {
+          "default": 0.0,
+          "title": "Pan Ty",
+          "type": "number"
+        },
+        "easing": {
+          "$ref": "#/$defs/Easing",
+          "default": "linear"
+        },
+        "residual": {
+          "description": "Fit error; above threshold -> store raw keyframes instead",
+          "title": "Residual",
+          "type": "number"
+        },
+        "raw_keyframes": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Populated only when residual exceeds the primitive-fit threshold",
+          "title": "Raw Keyframes"
+        }
+      },
+      "required": [
+        "primitive",
+        "residual"
+      ],
+      "title": "MotionCurve",
+      "type": "object"
+    },
+    "MotionPrimitive": {
+      "enum": [
+        "punch_in",
+        "slow_push",
+        "zoom_out_reveal",
+        "pan",
+        "whip",
+        "static",
+        "keyframed"
+      ],
+      "title": "MotionPrimitive",
+      "type": "string"
+    },
+    "Shot": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "t_in": {
+          "minimum": 0,
+          "title": "T In",
+          "type": "number"
+        },
+        "t_out": {
+          "minimum": 0,
+          "title": "T Out",
+          "type": "number"
+        },
+        "in_transition": {
+          "$ref": "#/$defs/Transition"
+        },
+        "out_transition": {
+          "$ref": "#/$defs/Transition"
+        },
+        "motion": {
+          "$ref": "#/$defs/MotionCurve"
+        },
+        "effects": {
+          "items": {
+            "$ref": "#/$defs/ShotEffect"
+          },
+          "title": "Effects",
+          "type": "array"
+        },
+        "grade": {
+          "$ref": "#/$defs/Grade"
+        },
+        "content": {
+          "$ref": "#/$defs/ShotContent"
+        }
+      },
+      "required": [
+        "id",
+        "t_in",
+        "t_out",
+        "in_transition",
+        "out_transition",
+        "motion"
+      ],
+      "title": "Shot",
+      "type": "object"
+    },
+    "ShotContent": {
+      "properties": {
+        "shot_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shot Type"
+        },
+        "has_face": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Has Face"
+        },
+        "subject_motion": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject Motion"
+        }
+      },
+      "title": "ShotContent",
+      "type": "object"
+    },
+    "ShotEffect": {
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/EffectType"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "confidence": {
+          "default": 1.0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "params"
+      ],
+      "title": "ShotEffect",
+      "type": "object"
+    },
+    "SourceInfo": {
+      "properties": {
+        "hash": {
+          "title": "Hash",
+          "type": "string"
+        },
+        "duration_s": {
+          "title": "Duration S",
+          "type": "number"
+        },
+        "fps": {
+          "title": "Fps",
+          "type": "integer"
+        },
+        "w": {
+          "title": "W",
+          "type": "integer"
+        },
+        "h": {
+          "title": "H",
+          "type": "integer"
+        },
+        "original_fps_variable": {
+          "default": false,
+          "title": "Original Fps Variable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "hash",
+        "duration_s",
+        "fps",
+        "w",
+        "h"
+      ],
+      "title": "SourceInfo",
+      "type": "object"
+    },
+    "TextAnimation": {
+      "enum": [
+        "pop",
+        "slide_up",
+        "typewriter",
+        "fade",
+        "bounce",
+        "word_by_word"
+      ],
+      "title": "TextAnimation",
+      "type": "string"
+    },
+    "TextBox": {
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "w": {
+          "title": "W",
+          "type": "number"
+        },
+        "anchor": {
+          "default": "center",
+          "enum": [
+            "center",
+            "top_left",
+            "top_right",
+            "bottom_left",
+            "bottom_right"
+          ],
+          "title": "Anchor",
+          "type": "string"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "w"
+      ],
+      "title": "TextBox",
+      "type": "object"
+    },
+    "TextLayer": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "t_in": {
+          "minimum": 0,
+          "title": "T In",
+          "type": "number"
+        },
+        "t_out": {
+          "minimum": 0,
+          "title": "T Out",
+          "type": "number"
+        },
+        "string": {
+          "description": "OCR'd text - treat as UNTRUSTED, see mcp/tools.py",
+          "title": "String",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/TextRole"
+        },
+        "role_confidence": {
+          "default": 1.0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Role Confidence",
+          "type": "number"
+        },
+        "box": {
+          "$ref": "#/$defs/TextBox"
+        },
+        "style": {
+          "$ref": "#/$defs/TextStyle"
+        },
+        "animation": {
+          "$ref": "#/$defs/TextLayerAnimation"
+        }
+      },
+      "required": [
+        "id",
+        "t_in",
+        "t_out",
+        "string",
+        "role",
+        "box",
+        "style",
+        "animation"
+      ],
+      "title": "TextLayer",
+      "type": "object"
+    },
+    "TextLayerAnimation": {
+      "properties": {
+        "in": {
+          "$ref": "#/$defs/TextAnimation"
+        },
+        "out": {
+          "$ref": "#/$defs/TextAnimation"
+        },
+        "in_duration_f": {
+          "title": "In Duration F",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "in",
+        "out",
+        "in_duration_f"
+      ],
+      "title": "TextLayerAnimation",
+      "type": "object"
+    },
+    "TextRole": {
+      "enum": [
+        "hook_title",
+        "caption_burnin",
+        "lyric",
+        "label",
+        "cta",
+        "watermark"
+      ],
+      "title": "TextRole",
+      "type": "string"
+    },
+    "TextStyle": {
+      "properties": {
+        "font_guess": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Font Guess"
+        },
+        "font_confidence": {
+          "default": 0.0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Font Confidence",
+          "type": "number"
+        },
+        "fill": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fill"
+        },
+        "stroke": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stroke"
+        },
+        "stroke_px": {
+          "default": 0.0,
+          "title": "Stroke Px",
+          "type": "number"
+        },
+        "size_rel": {
+          "description": "Font size relative to frame height",
+          "title": "Size Rel",
+          "type": "number"
+        },
+        "has_background_pill": {
+          "default": false,
+          "title": "Has Background Pill",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "size_rel"
+      ],
+      "title": "TextStyle",
+      "type": "object"
+    },
+    "Transition": {
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/TransitionType"
+        },
+        "duration_f": {
+          "default": 0,
+          "title": "Duration F",
+          "type": "integer"
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "enum": [
+                "left",
+                "right",
+                "up",
+                "down"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Direction"
+        },
+        "confidence": {
+          "default": 1.0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TransitionEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "Transition",
+      "type": "object"
+    },
+    "TransitionEvidence": {
+      "description": "Numeric justification for a transition classification.\n\nPopulated by signals/cuts.py. Every field here must correspond to an\nactual measurement taken, not a description - this struct IS the\nevidence gate input for L2 (see semantics/gating.py).",
+      "properties": {
+        "detector": {
+          "title": "Detector",
+          "type": "string"
+        },
+        "metric_name": {
+          "title": "Metric Name",
+          "type": "string"
+        },
+        "metric_value": {
+          "title": "Metric Value",
+          "type": "number"
+        },
+        "threshold_used": {
+          "title": "Threshold Used",
+          "type": "number"
+        }
+      },
+      "required": [
+        "detector",
+        "metric_name",
+        "metric_value",
+        "threshold_used"
+      ],
+      "title": "TransitionEvidence",
+      "type": "object"
+    },
+    "TransitionType": {
+      "enum": [
+        "cut",
+        "dissolve",
+        "whip_pan",
+        "flash",
+        "zoom"
+      ],
+      "title": "TransitionType",
+      "type": "string"
+    }
+  },
+  "description": "L1 output. Pure function of the normalized video. No LLM involved.\n\nProduced by signals/trace_builder.py from the per-concern extractors in\nsignals/{cuts,motion,text,audio,effects}.py. This object is what gets\npersisted, cached by content hash, and handed to L2 as the numeric\nground truth that gates every semantic claim.",
+  "properties": {
+    "trace_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Trace Version",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceInfo"
+    },
+    "audio": {
+      "$ref": "#/$defs/AudioTrace"
+    },
+    "shots": {
+      "items": {
+        "$ref": "#/$defs/Shot"
+      },
+      "title": "Shots",
+      "type": "array"
+    },
+    "text_layers": {
+      "items": {
+        "$ref": "#/$defs/TextLayer"
+      },
+      "title": "Text Layers",
+      "type": "array"
+    },
+    "evidence": {
+      "$ref": "#/$defs/EvidenceMeta"
+    }
+  },
+  "required": [
+    "source",
+    "audio",
+    "shots",
+    "evidence"
+  ],
+  "title": "EditTrace",
+  "type": "object"
+}

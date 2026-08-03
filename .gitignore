@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/
+*.mp4
+*.wav
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+eval/reports/
+node_modules/
+.env
