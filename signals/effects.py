@@ -26,7 +26,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from schemas.models import Grade, ShotEffect
+from schemas.models import EffectType, Grade, ShotEffect
 
 # Unit 1.3 tunables - see module docstring / INSTRUCTIONS.md Unit 1.3.
 WATERMARK_CORNER_FRACTION = 0.15  # outer 15% width/height in each corner
@@ -49,9 +49,38 @@ PARAM_SCHEMAS: dict[str, dict] = {
 }
 
 
-def detect_freeze(shot_frames, audio_active: bool) -> ShotEffect | None:
-    """frame diff ~ 0 while audio continues."""
-    raise NotImplementedError
+FREEZE_DIFF_THRESHOLD = 1.0  # mean cv2.absdiff, 0-255 scale
+FREEZE_MIN_RUN_FRAMES = 6  # ~0.2s at 30fps
+
+
+def detect_freeze(shot_frames: list[np.ndarray], audio_active: bool) -> ShotEffect | None:
+    """frame diff ~ 0 while audio continues.
+
+    `audio_active` reflects the WHOLE shot (per the stub's own signature) -
+    a freeze with silence throughout isn't a freeze-frame effect, it's just
+    a static shot, per spec sec 3.5's detection signal ("frame diff ~ 0
+    WHILE audio continues")."""
+    if not audio_active or len(shot_frames) < FREEZE_MIN_RUN_FRAMES + 1:
+        return None
+
+    diffs = [float(np.mean(cv2.absdiff(a, b))) for a, b in zip(shot_frames[:-1], shot_frames[1:])]
+
+    best_len, best_start = 0, None
+    run_len, run_start = 0, None
+    for i, d in enumerate(diffs):
+        if d < FREEZE_DIFF_THRESHOLD:
+            if run_start is None:
+                run_start = i
+            run_len += 1
+            if run_len > best_len:
+                best_len, best_start = run_len, run_start
+        else:
+            run_start, run_len = None, 0
+
+    if best_len < FREEZE_MIN_RUN_FRAMES:
+        return None
+
+    return ShotEffect(type=EffectType.freeze, params={"duration_f": best_len + 1}, confidence=1.0)
 
 
 def detect_speed_ramp(motion_magnitude_series, audio_pitch_series) -> ShotEffect | None:
@@ -67,14 +96,96 @@ def detect_rgb_split(shot_frames) -> ShotEffect | None:
     raise NotImplementedError
 
 
-def detect_flash(luminance_series, beat_grid_s: list[float]) -> ShotEffect | None:
-    """Luminance spikes at beat positions."""
-    raise NotImplementedError
+FLASH_SIGMA_THRESHOLD = 2.0
+FLASH_BEAT_TOLERANCE_S = 0.1
 
 
-def detect_blur_pulse(shot_frames) -> ShotEffect | None:
-    """Laplacian variance dips."""
-    raise NotImplementedError
+def detect_flash(luminance_series: list[tuple[float, float]], beat_grid_s: list[float]) -> ShotEffect | None:
+    """Luminance spikes at beat positions.
+
+    `luminance_series` is [(t, mean_luminance), ...] - the stub's bare
+    `luminance_series` name didn't specify a shape and a per-frame
+    timestamp is required to check beat-proximity, so this is (t, value)
+    pairs, not a plain value list. No caller existed yet to break.
+
+    NOTE: this is a distinct, shot-INTERNAL flash detector from
+    signals/cuts.py's transition-boundary flash check (Unit 1.5) - that
+    one classifies a *cut type*, this one flags a *mid-shot effect*. The
+    luminance-spike math is similar by coincidence, not shared code, per
+    the module docstring's instruction to keep them separate.
+    """
+    if len(luminance_series) < 3 or not beat_grid_s:
+        return None
+
+    times = [t for t, _ in luminance_series]
+    values = np.array([v for _, v in luminance_series], dtype=np.float64)
+    mean_lum, std_lum = float(np.mean(values)), float(np.std(values)) + 1e-6
+
+    best: tuple[float, float] | None = None  # (t, sigma)
+    for t, value in zip(times, values):
+        sigma = (value - mean_lum) / std_lum
+        if sigma <= FLASH_SIGMA_THRESHOLD:
+            continue
+        if not any(abs(t - beat) <= FLASH_BEAT_TOLERANCE_S for beat in beat_grid_s):
+            continue
+        if best is None or sigma > best[1]:
+            best = (t, sigma)
+
+    if best is None:
+        return None
+
+    t, sigma = best
+    return ShotEffect(
+        type=EffectType.flash, params={"t": t, "duration_f": 1}, confidence=min(1.0, sigma / 4)
+    )
+
+
+BLUR_DIP_FRACTION = 0.4  # dip below this fraction of the shot's median Laplacian variance
+
+
+def detect_blur_pulse(shot_frames: list[np.ndarray], *, fps: int = 30) -> ShotEffect | None:
+    """Laplacian variance dips.
+
+    Signature extended with `fps` (default matching Settings.normalize_fps)
+    - t_in/t_out need real time units and shot_frames alone carries no
+      timing; no caller existed yet to break.
+    """
+    if len(shot_frames) < 3:
+        return None
+
+    variances = []
+    for frame in shot_frames:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        variances.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
+
+    median_var = float(np.median(variances))
+    if median_var <= 1e-6:
+        return None
+    threshold = median_var * BLUR_DIP_FRACTION
+
+    dip_indices = [i for i, v in enumerate(variances) if v < threshold]
+    if not dip_indices:
+        return None
+
+    runs: list[tuple[int, int]] = []
+    start = prev = dip_indices[0]
+    for idx in dip_indices[1:]:
+        if idx == prev + 1:
+            prev = idx
+        else:
+            runs.append((start, prev))
+            start = prev = idx
+    runs.append((start, prev))
+
+    best_start, best_end = max(runs, key=lambda r: r[1] - r[0])
+    dip_min_var = min(variances[best_start : best_end + 1])
+    laplacian_dip = 1.0 - (dip_min_var / median_var)
+
+    return ShotEffect(
+        type=EffectType.blur_pulse,
+        params={"t_in": best_start / fps, "t_out": (best_end + 1) / fps, "laplacian_dip": laplacian_dip},
+        confidence=1.0,
+    )
 
 
 def grade_stats(shot_frames) -> Grade:
