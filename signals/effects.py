@@ -23,6 +23,8 @@ see DESIGN_NOTES.md "Scope trim": do not block Phase 1 on this detector.
 
 from __future__ import annotations
 
+import math
+
 import cv2
 import numpy as np
 
@@ -174,9 +176,44 @@ def detect_speed_ramp(motion_magnitude_series: list[float], audio_pitch_series: 
     return ShotEffect(type=EffectType.speed_ramp, params={"segments": segments}, confidence=SPEED_RAMP_CONFIDENCE)
 
 
-def detect_rgb_split(shot_frames) -> ShotEffect | None:
-    """Per-channel cross-correlation offset > 0."""
-    raise NotImplementedError
+RGB_SPLIT_NOISE_FLOOR_PX = 1.0  # excludes compression-artifact sub-pixel misalignment, per spec sec 8.3
+
+
+def detect_rgb_split(shot_frames: list[np.ndarray]) -> ShotEffect | None:
+    """Per-channel cross-correlation offset > 0.
+
+    Uses cv2.phaseCorrelate (FFT-based cross-correlation) between the G
+    channel and each of R/B - phase correlation gives a direct, sub-pixel
+    translation estimate between two single-channel images, which is
+    exactly "the pixel offset that maximizes correlation between channels"
+    the module docstring calls for, without a manual patch-search loop.
+
+    Offset is aggregated (median) across all of shot_frames, not just one
+    frame - a real RGB-split/glitch effect is consistent across the shot,
+    so this also damps out any single-frame compression-noise outlier.
+    """
+    if not shot_frames:
+        return None
+
+    r_offsets, b_offsets = [], []
+    for frame in shot_frames:
+        b, g, r = cv2.split(frame.astype(np.float32))
+        (dx_r, dy_r), _response_r = cv2.phaseCorrelate(g, r)
+        (dx_b, dy_b), _response_b = cv2.phaseCorrelate(g, b)
+        r_offsets.append(math.hypot(dx_r, dy_r))
+        b_offsets.append(math.hypot(dx_b, dy_b))
+
+    offset_px_r = float(np.median(r_offsets))
+    offset_px_b = float(np.median(b_offsets))
+
+    if max(offset_px_r, offset_px_b) <= RGB_SPLIT_NOISE_FLOOR_PX:
+        return None
+
+    return ShotEffect(
+        type=EffectType.rgb_split,
+        params={"offset_px_r": offset_px_r, "offset_px_b": offset_px_b},
+        confidence=min(1.0, max(offset_px_r, offset_px_b) / 10.0),
+    )
 
 
 FLASH_SIGMA_THRESHOLD = 2.0
