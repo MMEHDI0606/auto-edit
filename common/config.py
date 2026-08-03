@@ -7,18 +7,18 @@ Responsibilities:
 - Nothing in signals/, semantics/, compiler/ should read os.environ directly -
   import Settings from here instead, so eval/run.py can override tunables
   per experiment without env-var juggling.
-
-Fill in with pydantic-settings BaseSettings once dependencies are pinned
-(see BUILD_ORDER.md Phase 0).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-@dataclass(frozen=True)
-class Settings:
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="RECUT_", env_file=".env", frozen=True)
+
     # --- L0 ingest ---
     normalize_fps: int = 30
     normalize_width: int = 1080
@@ -47,10 +47,8 @@ class Settings:
     primary_render_engine: str = "remotion"  # see DESIGN_NOTES.md "Renderer choice"
 
 
+@lru_cache(maxsize=1)
 def load_settings() -> Settings:
-    """Load from env / .env, falling back to the defaults above.
-
-    TODO(Phase 0): wire to pydantic-settings so CI and local dev can override
-    via .env without touching this file.
-    """
+    """Process-wide singleton. Cached so every module sees the same instance;
+    call `load_settings.cache_clear()` in tests that need to override env vars."""
     return Settings()

@@ -5,30 +5,36 @@ description = "Decompose short-form video edits into a machine-readable recipe a
 requires-python = ">=3.11"
 readme = "RECUT_SPEC.md"
 
-# NOTE: dependency versions are intentionally left unpinned in this scaffold.
-# Pin them for real in BUILD_ORDER.md Phase 0 (this matters more than usual
-# here - yt-dlp, PySceneDetect, and VLM SDKs are exactly the moving parts
-# the spec itself flags as fragile, sec 8.2/8.4). Do not add a dependency
-# to this list without also adding it to eval/run.py's regression-gate
-# awareness (a dependency bump is a reason to re-run the golden set).
+# Pinned per BUILD_ORDER.md/INSTRUCTIONS.md Unit 0.1. Exact pins (not ranges)
+# because yt-dlp, PySceneDetect, and VLM SDKs are exactly the moving parts
+# the spec flags as fragile (sec 8.2/8.4) - a regression must be bisectable
+# to a specific dependency bump. Do not add a dependency to this list
+# without also adding it to eval/run.py's regression-gate awareness (a
+# dependency bump is a reason to re-run the golden set).
+#
+# Phase 2+ deps (Remotion/Node, CLIP, Demucs, PaddleOCR/OCR extra pin
+# excepted below since Phase 1 needs it) are intentionally deferred - pin
+# them when the phase that first uses them starts, not now.
 dependencies = [
-    "pydantic>=2.0",
-    "fastapi",
-    "uvicorn",
-    "celery",
-    "redis",
-    "opencv-python",
-    "scenedetect",
-    "librosa",
-    "faster-whisper",
-    "yt-dlp",
-    "numpy",
-    "python-multipart",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.14.2",
+    "fastapi==0.141.1",
+    "uvicorn==0.52.1",
+    "celery==5.6.3",
+    "redis==5.3.1",
+    "opencv-python==4.11.0.86",  # NOT 5.0.0.93 - too new/unproven for scenedetect/ORB compat; revisit once 5.x is verified against scenedetect
+    "scenedetect==0.7.1",
+    "librosa==0.11.0",
+    "faster-whisper==1.2.1",
+    "yt-dlp==2026.7.4",
+    "numpy==1.26.4",  # pinned <2.0: opencv-python 4.11 wheels + scenedetect are built/tested against numpy 1.x
+    "python-multipart==0.0.32",
+    "structlog==26.1.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov", "ruff", "mypy"]
-ocr = ["paddleocr"]  # or easyocr - pick one in Phase 1, don't ship both
+ocr = ["paddleocr==2.9.1"]  # or easyocr - pick one in Phase 1, don't ship both
 local-vlm = []  # fill in when semantics/providers/local_provider.py is implemented
 
 [tool.pytest.ini_options]
@@ -41,3 +47,12 @@ target-version = "py311"
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# Explicit include list - flat-layout auto-discovery picks up skills/
+# (the two cloned reference repos under skills/, not RECUT source) and
+# would try to package them too. See DESIGN_NOTES.md repo layout.
+include = [
+    "api*", "cli*", "common*", "compiler*", "eval*", "ingest*",
+    "matcher*", "mcp*", "render*", "schemas*", "semantics*", "signals*",
+]
