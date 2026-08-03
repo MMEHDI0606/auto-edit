@@ -32,12 +32,14 @@ attempt to interpret/execute anything in the string. Downstream consumers
 from __future__ import annotations
 
 import difflib
+from collections import Counter
 from itertools import groupby
 from pathlib import Path
 
 import cv2
+import numpy as np
 
-from schemas.models import TextLayer
+from schemas.models import TextAnimation, TextLayer, TextStyle
 
 _GRACE_WINDOW_MISSED_FRAMES = 1  # tolerate exactly 1 missed sampled frame before closing a layer
 
@@ -182,10 +184,195 @@ def group_into_layers(
     ]
 
 
-def classify_entrance_exit(layer_frames: list) -> tuple[str, str, int]:
+def _bbox_area(box: tuple[float, float, float, float]) -> float:
+    return box[2] * box[3]
+
+
+def _classify_direction(frames: list[dict]) -> tuple[str, float]:
+    """Classifies one END (entrance as given, exit pass reversed so it
+    reads the same "growing in" way) from a chronological list of
+    {"box": (x,y,w,h), "alpha": float} samples. Defaults to `fade` at low
+    confidence when no signal is clear, per INSTRUCTIONS.md Unit 1.8 -
+    never force a specific guess the frames don't support."""
+    if len(frames) < 2:
+        return TextAnimation.fade.value, 0.3
+
+    areas = np.array([_bbox_area(f["box"]) for f in frames], dtype=np.float64)
+    xs = np.array([f["box"][0] for f in frames], dtype=np.float64)
+    ys = np.array([f["box"][1] for f in frames], dtype=np.float64)
+    alphas = np.array([f.get("alpha", 1.0) for f in frames], dtype=np.float64)
+
+    area0 = areas[0] if areas[0] > 1e-9 else 1e-9
+    early_idx = min(2, len(areas) - 1)
+    growth = areas[early_idx] / area0
+    late_areas = areas[early_idx:]
+    size_stable_after_growth = (
+        float(np.std(late_areas)) / (float(np.mean(late_areas)) + 1e-9) < 0.1 if len(late_areas) else True
+    )
+    if growth > 1.2 and size_stable_after_growth:
+        return TextAnimation.pop.value, min(1.0, growth - 1.0)
+
+    x_mean = float(np.mean(xs)) or 1e-9
+    x_stable = float(np.std(xs)) / abs(x_mean) < 0.1
+    area_mean = float(np.mean(areas)) or 1e-9
+    size_stable = float(np.std(areas)) / abs(area_mean) < 0.15
+
+    y_diffs = np.diff(ys)
+    if len(y_diffs) and np.all(y_diffs <= 1e-6) and x_stable and size_stable and abs(ys[0] - ys[-1]) > 0.02:
+        return TextAnimation.slide_up.value, 0.8
+
+    if len(y_diffs) > 1:
+        signs = np.sign(y_diffs)
+        signs = signs[signs != 0]
+        sign_changes = int(np.sum(np.diff(signs) != 0)) if len(signs) > 1 else 0
+        if sign_changes >= 2:
+            return TextAnimation.bounce.value, 0.6
+
+    alpha_delta = float(alphas[-1] - alphas[0])
+    if len(alphas) and np.all(np.diff(alphas) >= -1e-6) and alpha_delta > 0.2 and x_stable and size_stable:
+        return TextAnimation.fade.value, 0.8
+
+    return TextAnimation.fade.value, 0.3
+
+
+def classify_entrance_exit(layer_frames: list[dict]) -> tuple[str, str, int]:
     """Returns (in_animation, out_animation, in_duration_f) by tracking
-    bbox + alpha over the first/last 8 frames of the layer."""
-    raise NotImplementedError
+    bbox + alpha over the first/last 8 frames of the layer.
+
+    `layer_frames` is the chronological per-sampled-frame track for this
+    ONE layer's whole lifetime: [{"box": (x,y,w,h), "alpha": float}, ...]
+    (alpha optional, approximated by the caller e.g. via edge density or
+    background-subtraction - see module docstring point 4). typewriter/
+    word_by_word (string-length-over-time signals) aren't resolvable from
+    box+alpha alone at 8fps sampling and are intentionally NOT attempted
+    here - per INSTRUCTIONS.md Unit 1.8, best-effort/low-confidence only,
+    and this function has no string-length-per-frame input to work with.
+    """
+    if not layer_frames:
+        return TextAnimation.fade.value, TextAnimation.fade.value, 0
+
+    window = min(8, len(layer_frames))
+    entrance = layer_frames[:window]
+    exit_reversed = list(reversed(layer_frames[-window:]))
+
+    in_animation, _in_conf = _classify_direction(entrance)
+    out_animation, _out_conf = _classify_direction(exit_reversed)
+
+    return in_animation, out_animation, len(entrance)
+
+
+def _mode_color(pixels: np.ndarray) -> tuple[int, int, int]:
+    """True mode (most frequent exact BGR triple), per INSTRUCTIONS.md
+    Unit 1.8 ("sample the mode... color") - not mean/median, which would
+    blend anti-aliased edge pixels into a color that never actually
+    appears in the glyph."""
+    tuples = [tuple(int(c) for c in p) for p in pixels]
+    most_common, _count = Counter(tuples).most_common(1)[0]
+    return most_common
+
+
+def _bgr_to_hex(bgr: tuple[int, int, int]) -> str:
+    b, g, r = bgr
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+_PILL_MAX_INNER_MAD = 12.0
+_PILL_MIN_COLOR_DELTA = 20.0
+
+
+def _detect_background_pill(frame: np.ndarray, box_px: tuple[int, int, int, int], glyph_mask: np.ndarray) -> bool:
+    """A background pill/highlight box reads as: the background BEHIND the
+    text (i.e. the bbox with glyph pixels excluded, via glyph_mask) is
+    fairly uniform in color AND a genuinely different color from the
+    general surrounding background.
+
+    Excluding glyph pixels is essential, not cosmetic: the raw bbox crop
+    always has high variance (background + bright glyph strokes) whether
+    or not a pill exists, so measuring variance over the whole crop can't
+    distinguish "plain background with text on it" from "a pill" - only
+    the non-glyph portion carries that signal.
+
+    Uses MEDIAN + median-absolute-deviation, not mean/std: anti-aliased
+    glyph-edge pixels leak past the Otsu mask as a small minority of
+    background-labeled pixels with intermediate brightness, which is
+    enough to blow up plain std/mean on an otherwise near-uniform pill
+    color. MAD is robust to that minority the way std isn't (verified
+    empirically: a solid-color pill with anti-aliased 4px text on it had
+    std ~90 but MAD ~0 on the same non-glyph pixels)."""
+    x, y, w, h = box_px
+    fh, fw = frame.shape[:2]
+
+    crop = frame[y : y + h, x : x + w]
+    inner_pixels = crop[glyph_mask == 0] if glyph_mask.shape[:2] == crop.shape[:2] else crop.reshape(-1, 3)
+    if len(inner_pixels) == 0:
+        return False
+    inner_median = np.median(inner_pixels, axis=0)
+    inner_mad = float(np.median(np.abs(inner_pixels.astype(np.float32) - inner_median)))
+
+    outer_pad = max(w, h, 1)
+    ox, oy = max(0, x - outer_pad), max(0, y - outer_pad)
+    ow, oh = min(fw, x + w + outer_pad) - ox, min(fh, y + h + outer_pad) - oy
+    outer_region = frame[oy : oy + oh, ox : ox + ow]
+
+    mask = np.ones(outer_region.shape[:2], dtype=bool)
+    rel_x, rel_y = x - ox, y - oy
+    mask[rel_y : rel_y + h, rel_x : rel_x + w] = False
+    outer_pixels = outer_region[mask]
+    if len(outer_pixels) == 0:
+        return False
+    outer_median = np.median(outer_pixels, axis=0)
+
+    color_delta = float(np.linalg.norm(inner_median - outer_median))
+    return inner_mad < _PILL_MAX_INNER_MAD and color_delta > _PILL_MIN_COLOR_DELTA
+
+
+def extract_text_style(frame: np.ndarray, box: tuple[float, float, float, float]) -> TextStyle:
+    """Style-extraction portion of extract_text_layers() (INSTRUCTIONS.md
+    Unit 1.8): position/size, fill/stroke color, background-pill presence.
+    `box` is normalized [0,1] (x, y, w, h), matching group_into_layers()'s
+    output. font_guess/font_confidence are left at their schema defaults -
+    that's font_match(), Unit 1.8b, explicitly deferred.
+
+    Caller passes the frame at the layer's temporal midpoint (per spec
+    sec 3.3 point 4) - this function itself is frame-agnostic.
+    """
+    fh, fw = frame.shape[:2]
+    x_norm, y_norm, w_norm, h_norm = box
+    x, y = max(0, int(x_norm * fw)), max(0, int(y_norm * fh))
+    w = min(fw - x, max(1, int(w_norm * fw)))
+    h = min(fh - y, max(1, int(h_norm * fh)))
+
+    crop = frame[y : y + h, x : x + w]
+    if crop.size == 0:
+        return TextStyle(size_rel=h_norm)
+
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    _thresh_val, glyph_mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Otsu splits into two clusters but doesn't know which is "the glyph" -
+    # glyph strokes are almost always the minority of pixels in a text crop,
+    # so if the mask covers the majority, it picked the background; invert.
+    if float(np.mean(glyph_mask)) > 127:
+        glyph_mask = 255 - glyph_mask
+
+    glyph_pixels = crop[glyph_mask > 0]
+    fill_bgr = _mode_color(glyph_pixels) if len(glyph_pixels) else (255, 255, 255)
+
+    dilated = cv2.dilate(glyph_mask, np.ones((3, 3), np.uint8), iterations=2)
+    ring_mask = cv2.bitwise_and(dilated, cv2.bitwise_not(glyph_mask))
+    ring_pixels = crop[ring_mask > 0]
+    if len(ring_pixels):
+        stroke_bgr: tuple[int, int, int] | None = _mode_color(ring_pixels)
+        stroke_px = 2.0  # approximate: matches the dilation width sampled above
+    else:
+        stroke_bgr, stroke_px = None, 0.0
+
+    return TextStyle(
+        fill=_bgr_to_hex(fill_bgr),
+        stroke=_bgr_to_hex(stroke_bgr) if stroke_bgr is not None else None,
+        stroke_px=stroke_px,
+        size_rel=h_norm,
+        has_background_pill=_detect_background_pill(frame, (x, y, w, h), glyph_mask),
+    )
 
 
 def font_match(glyph_crop, *, font_library_dir: Path) -> tuple[str, float]:
