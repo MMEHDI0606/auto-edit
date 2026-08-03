@@ -110,11 +110,38 @@ def separate_speech_music(wav_path: Path) -> tuple[Path, Path]:
     return speech_stem_path, music_stem_path
 
 
-def compute_beat_lock(cut_times_s: list[float], beat_grid_s: list[float]) -> tuple[float, int]:
+BEAT_LOCK_TOLERANCE_FRAMES = 3
+
+
+def compute_beat_lock(cut_times_s: list[float], beat_grid_s: list[float], *, fps: int) -> tuple[float, int]:
     """Returns (beat_lock_ratio, median_cut_offset_frames) - see module
     docstring for why the offset must be signed and preserved, not
-    normalized away."""
-    raise NotImplementedError
+    normalized away.
+
+    Signature extended with `fps` (the stub omitted it) - converting a
+    seconds-domain offset to a frame count needs a frame rate, and nothing
+    called this function yet to depend on the two-argument shape.
+
+    `beat_lock_ratio` is over ALL cuts (locked / total); `median_cut_offset_frames`
+    is computed ONLY over cuts that locked (within BEAT_LOCK_TOLERANCE_FRAMES
+    of their nearest beat) - a cut nowhere near any beat contributes to the
+    ratio's denominator but must not drag the median toward zero.
+    """
+    if not cut_times_s or not beat_grid_s:
+        return 0.0, 0
+
+    sorted_beats = sorted(beat_grid_s)
+    locked_offsets_frames: list[int] = []
+
+    for cut_t in cut_times_s:
+        nearest_beat = min(sorted_beats, key=lambda b: abs(b - cut_t))
+        offset_f = round((cut_t - nearest_beat) * fps)
+        if abs(offset_f) <= BEAT_LOCK_TOLERANCE_FRAMES:
+            locked_offsets_frames.append(offset_f)
+
+    beat_lock_ratio = len(locked_offsets_frames) / len(cut_times_s)
+    median_offset_frames = int(round(float(np.median(locked_offsets_frames)))) if locked_offsets_frames else 0
+    return beat_lock_ratio, median_offset_frames
 
 
 def analyze_audio(wav_path: Path, cut_times_s: list[float]) -> AudioTrace:
