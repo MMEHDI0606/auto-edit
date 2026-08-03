@@ -14,18 +14,51 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import librosa
+import numpy as np
+
 from schemas.models import AudioTrace
+
+# Unit 1.9 tunables - see module docstring / INSTRUCTIONS.md Unit 1.9.
+_SECTION_TARGET_LENGTH_S = 8.0  # heuristic: aim for ~1 section per 8s; retune against golden set (Unit 1.19)
+_SECTION_MAX_COUNT = 8
 
 
 def extract_beat_grid(wav_path: Path) -> tuple[float, list[float]]:
     """librosa.beat_track -> (tempo_bpm, beat_grid_s)."""
-    raise NotImplementedError
+    y, sr = librosa.load(str(wav_path), sr=22050)
+    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+    # librosa >=0.10 returns tempo as a 1-element ndarray, not a bare float.
+    tempo_bpm = float(np.asarray(tempo).reshape(-1)[0])
+    beat_times = librosa.frames_to_time(beat_frames, sr=sr).tolist()
+    return tempo_bpm, beat_times
 
 
 def extract_sections(wav_path: Path) -> list[dict]:
-    """Spectral-clustering segmentation -> [{t_in, t_out, label}, ...]
-    (intro/verse/drop-style labels)."""
-    raise NotImplementedError
+    """Spectral-clustering segmentation -> [{t_in, t_out, label}, ...].
+
+    Labels are GENERIC positional identifiers ("section_1", "section_2",
+    ...), never semantic ("intro"/"drop") - semantic section labeling is
+    L2's job (VLM, evidence-gated against these boundaries), not L1's. L1
+    only measures that a boundary exists, not what it means.
+    """
+    y, sr = librosa.load(str(wav_path), sr=22050)
+    duration_s = len(y) / sr
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+
+    k = max(1, min(_SECTION_MAX_COUNT, round(duration_s / _SECTION_TARGET_LENGTH_S)))
+    k = min(k, max(1, mfcc.shape[1] - 1))
+
+    if k <= 1:
+        return [{"t_in": 0.0, "t_out": duration_s, "label": "section_1"}]
+
+    boundary_frames = librosa.segment.agglomerative(mfcc, k)
+    boundary_times = sorted(set([0.0, *librosa.frames_to_time(boundary_frames, sr=sr).tolist(), duration_s]))
+
+    return [
+        {"t_in": boundary_times[i], "t_out": boundary_times[i + 1], "label": f"section_{i + 1}"}
+        for i in range(len(boundary_times) - 1)
+    ]
 
 
 def transcribe(wav_path: Path) -> list[dict]:
