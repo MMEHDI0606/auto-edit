@@ -16,7 +16,14 @@ point eval/run.py's Phase-1-gate check at this file.
 
 Ground truth baked into synthetic_clip.mp4 (see synthetic_clip.meta.json,
 written alongside it):
-  - 3 shots via 2 hard cuts at t=1.2s and t=2.0s (solid colors: red, blue, green)
+  - 3 shots via 2 hard cuts at t=1.2s and t=2.0s (solid colors, hand-picked
+    to have near-identical grayscale luminance ~130/255 despite being
+    visually/HSV distinct - see signals/cuts.py's flash-vs-cut discriminator:
+    naive primary colors like red/blue/green swing luminance by 100+, which
+    reads as a false "flash" on a hard cut between two solid-color shots.
+    Real footage's hard cuts rarely swing mean luminance this hard between
+    similarly-exposed shots, so matching luminance here makes the fixture
+    representative instead of adversarial)
   - one on-screen text layer "HOOK TEXT", visible t_in=0.2s, t_out=1.15s
     (drawtext on the red shot only)
   - a click-track audio at 120 BPM (beat every 0.5s) for the full 3.5s
@@ -46,8 +53,10 @@ FONT_FILE = r"C:\Windows\Fonts\arial.ttf".replace("\\", "/").replace(":", "\\:")
 FPS = 30
 W, H = 1080, 1920
 
-# (color, duration_s)
-SHOTS = [("red", 1.2), ("blue", 0.8), ("green", 1.5)]
+# (color, duration_s) - hex colors chosen so all three have ~equal grayscale
+# luminance (~130/255, see module docstring), avoiding a false flash-vs-cut
+# false positive from a big luminance swing between solid-color shots.
+SHOTS = [("0xC86465", 1.2), ("0x14C83A", 0.8), ("0xCA50C8", 1.5)]
 TOTAL_S = sum(d for _, d in SHOTS)
 CUTS_S = [1.2, 2.0]  # cumulative boundaries between shots
 
