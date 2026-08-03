@@ -23,7 +23,15 @@ see DESIGN_NOTES.md "Scope trim": do not block Phase 1 on this detector.
 
 from __future__ import annotations
 
+import cv2
+import numpy as np
+
 from schemas.models import Grade, ShotEffect
+
+# Unit 1.3 tunables - see module docstring / INSTRUCTIONS.md Unit 1.3.
+WATERMARK_CORNER_FRACTION = 0.15  # outer 15% width/height in each corner
+WATERMARK_VARIANCE_THRESHOLD = 12.0  # near-zero temporal variance (0-255 scale) => static region
+WATERMARK_MIN_LUMINANCE = 20.0  # excludes plain black letterbox bars from candidates
 
 PARAM_SCHEMAS: dict[str, dict] = {
     # Per-effect-type parameter shape documentation for ShotEffect.params.
@@ -83,10 +91,77 @@ def detect_mask_cutout(shot_frames, *, enabled: bool) -> ShotEffect | None:
     raise NotImplementedError
 
 
-def mask_watermark_regions(shot_frames, *, static_corner_regions: list[tuple]) -> list:
+def _corner_boxes(h: int, w: int, fraction: float) -> dict[str, tuple[int, int, int, int]]:
+    cw, ch = max(1, int(w * fraction)), max(1, int(h * fraction))
+    return {
+        "top_left": (0, 0, cw, ch),
+        "top_right": (w - cw, 0, cw, ch),
+        "bottom_left": (0, h - ch, cw, ch),
+        "bottom_right": (w - cw, h - ch, cw, ch),
+    }
+
+
+def _median_blur_safe(patch: np.ndarray) -> np.ndarray:
+    """cv2.medianBlur needs an odd kernel size smaller than both patch
+    dimensions - clamp down for small corner patches rather than raising."""
+    ksize = min(15, patch.shape[0], patch.shape[1])
+    if ksize % 2 == 0:
+        ksize -= 1
+    if ksize < 3:
+        return patch
+    return cv2.medianBlur(patch, ksize)
+
+
+def mask_watermark_regions(
+    shot_frames: list[np.ndarray],
+) -> tuple[list[np.ndarray], list[tuple[int, int, int, int]]]:
     """Detect+mask static corner regions (TikTok/IG watermark bugs) BEFORE
     OCR/flow run on a shot - spec sec 8.3 mitigation for watermark
     pollution. Must be called upstream by trace_builder before text.py and
     motion.py see the frames, not treated as a separate optional pass.
+
+    Static-corner masking only - this is a preprocessing step, not a full
+    watermark detector. Moving/rotating/per-platform-specific watermark
+    recognition is out of scope.
+
+    Returns (masked_frames, masked_rects_px) where masked_rects_px is
+    [(x, y, w, h), ...] in pixel coordinates - trace_builder logs these into
+    EvidenceMeta.
     """
-    raise NotImplementedError
+    if not shot_frames:
+        return [], []
+
+    # Sample every 10th frame across the whole shot to build the variance
+    # map - per-frame would be wasteful and isn't needed for a per-shot,
+    # temporally-static signal.
+    sample = shot_frames[::10] if len(shot_frames) > 10 else shot_frames
+    stacked = np.stack([f.astype(np.float32) for f in sample], axis=0)
+
+    variance_map = np.var(stacked, axis=0)
+    mean_map = stacked.mean(axis=0)
+    if variance_map.ndim == 3:
+        variance_map = variance_map.mean(axis=2)
+        mean_map = mean_map.mean(axis=2)
+
+    h, w = variance_map.shape
+    masked_rects: list[tuple[int, int, int, int]] = []
+    for x, y, cw, ch in _corner_boxes(h, w, WATERMARK_CORNER_FRACTION).values():
+        region_var = variance_map[y : y + ch, x : x + cw]
+        region_lum = mean_map[y : y + ch, x : x + cw]
+        # Near-zero temporal variance = content never changes here (a static
+        # logo bug); non-trivial mean luminance excludes plain black bars,
+        # which are also static but not a watermark worth masking.
+        if region_var.mean() < WATERMARK_VARIANCE_THRESHOLD and region_lum.mean() > WATERMARK_MIN_LUMINANCE:
+            masked_rects.append((x, y, cw, ch))
+
+    if not masked_rects:
+        return list(shot_frames), []
+
+    masked_frames = []
+    for frame in shot_frames:
+        out = frame.copy()
+        for x, y, cw, ch in masked_rects:
+            out[y : y + ch, x : x + cw] = _median_blur_safe(out[y : y + ch, x : x + cw])
+        masked_frames.append(out)
+
+    return masked_frames, masked_rects
