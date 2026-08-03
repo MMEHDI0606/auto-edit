@@ -34,7 +34,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov", "ruff", "mypy"]
-ocr = ["paddleocr==2.9.1"]  # or easyocr - pick one in Phase 1, don't ship both
+ocr = [
+    "paddleocr==2.9.1",
+    "paddlepaddle==2.6.2",  # NOT 3.x - paddleocr 2.9.1 targets paddle 2.x; 3.x's oneDNN backend
+                            # changes broke inference with "OneDnnContext does not have the input Filter"
+]
 local-vlm = []  # fill in when semantics/providers/local_provider.py is implemented
 
 [tool.pytest.ini_options]
