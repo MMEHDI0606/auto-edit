@@ -93,7 +93,7 @@ def sample_and_ocr(normalized_video_path: Path, *, sample_fps: int) -> list[dict
     return raw_boxes
 
 
-def _iou(box_a: tuple[float, float, float, float], box_b: tuple[float, float, float, float]) -> float:
+def bbox_iou(box_a: tuple[float, float, float, float], box_b: tuple[float, float, float, float]) -> float:
     ax, ay, aw, ah = box_a
     bx, by, bw, bh = box_b
     inter_x1, inter_y1 = max(ax, bx), max(ay, by)
@@ -143,7 +143,7 @@ def group_into_layers(
             for layer in open_layers:
                 if id(layer) in matched_ids:
                     continue  # don't double-match one open layer within the same frame
-                iou = _iou(layer["box"], fb["box"])
+                iou = bbox_iou(layer["box"], fb["box"])
                 if iou >= iou_threshold and iou > best_iou:
                     best_layer, best_iou = layer, iou
 

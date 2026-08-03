@@ -44,6 +44,7 @@ audio-sep = ["demucs==4.1.0"]  # pulled in only where signals/audio.py::separate
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: end-to-end tests that download models / run real ML inference (deselect with -m 'not slow')"]
 
 [tool.ruff]
 line-length = 110
