@@ -21,7 +21,71 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from scenedetect import SceneManager, open_video
+from scenedetect.detectors import AdaptiveDetector, ContentDetector
+
 from schemas.models import Transition
+
+CONTENT_DETECTOR_THRESHOLD = 27.0
+ADAPTIVE_DETECTOR_THRESHOLD = 3.0
+
+
+def reconcile_detectors(adaptive_boundaries: list[float], content_boundaries: list[float], *, fps: int) -> list[float]:
+    """Union two detector outputs, merging boundaries within ~1 frame of
+    each other. Kept as a standalone function so eval/ can unit test the
+    reconciliation logic against synthetic boundary lists without running
+    real CV (see eval/fixtures.py).
+    """
+    merged = sorted(set(adaptive_boundaries) | set(content_boundaries))
+    if not merged:
+        return []
+    tolerance_s = 1.0 / fps
+    result = [merged[0]]
+    for t in merged[1:]:
+        # Compare against the last KEPT boundary (not the previous raw
+        # value) so a run of near-duplicates collapses to one, keeping the
+        # earliest timestamp in the run.
+        if t - result[-1] <= tolerance_s:
+            continue
+        result.append(t)
+    return result
+
+
+def _run_detector(video_path: Path, detector, *, fps_hint: int | None = None) -> list[float]:
+    """Runs a single PySceneDetect detector end to end, returns boundary
+    timestamps in seconds (scene START times, excluding t=0 - a boundary is
+    a CUT POINT, not the first shot's own start)."""
+    video = open_video(str(video_path))
+    scene_manager = SceneManager()
+    scene_manager.add_detector(detector)
+    scene_manager.detect_scenes(video=video)
+    scene_list = scene_manager.get_scene_list()
+    return [scene[0].seconds for scene in scene_list[1:]]
+
+
+def detect_boundaries(normalized_video_path: Path, *, min_scene_len_frames: int) -> list[float]:
+    """Unit 1.4: boundary TIMES only, no transition-type classification
+    (that's detect_cuts(), Unit 1.5, built on top of this). Runs
+    ContentDetector and AdaptiveDetector in parallel against the
+    normalized, watermark-masked video and reconciles them - never run
+    only one detector, and min_scene_len_frames MUST come from
+    common.config.Settings.scene_detect_min_scene_len_frames (default 3),
+    never the library default of 15 (spec sec 3.1's central warning: default
+    settings merge the 6-10 frame shots short-form editors use routinely).
+    """
+    content_boundaries = _run_detector(
+        normalized_video_path,
+        ContentDetector(threshold=CONTENT_DETECTOR_THRESHOLD, min_scene_len=min_scene_len_frames),
+    )
+    adaptive_boundaries = _run_detector(
+        normalized_video_path,
+        AdaptiveDetector(adaptive_threshold=ADAPTIVE_DETECTOR_THRESHOLD, min_scene_len=min_scene_len_frames),
+    )
+    # fps for the merge-tolerance calculation: re-derive from the video
+    # itself rather than trusting a caller-supplied value that could be stale.
+    probe_video = open_video(str(normalized_video_path))
+    fps = round(probe_video.frame_rate)
+    return reconcile_detectors(adaptive_boundaries, content_boundaries, fps=fps)
 
 
 def detect_cuts(normalized_video_path: Path, *, min_scene_len_frames: int) -> list[Transition]:
@@ -39,14 +103,9 @@ def detect_cuts(normalized_video_path: Path, *, min_scene_len_frames: int) -> li
     A boundary that doesn't clear the whip_pan flow-spike-on-both-sides test
     must default to `cut`, per spec sec 8.3 ("whip read as a cut" mitigation)
     - do not guess whip_pan on a one-sided flow spike.
-    """
-    raise NotImplementedError
 
-
-def reconcile_detectors(adaptive_boundaries: list[float], content_boundaries: list[float], *, fps: int) -> list[float]:
-    """Union two detector outputs, merging boundaries within ~1 frame of
-    each other. Kept as a standalone function so eval/ can unit test the
-    reconciliation logic against synthetic boundary lists without running
-    real CV (see eval/fixtures.py).
+    IMPLEMENTED IN UNIT 1.5 (needs signals.motion.estimate_affine_motion for
+    the zoom branch, per INSTRUCTIONS.md's 1.4 -> 1.6 -> 1.5 build order) -
+    detect_boundaries() above is the Unit 1.4 half, already complete.
     """
     raise NotImplementedError
