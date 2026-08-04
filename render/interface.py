@@ -26,6 +26,11 @@ from schemas.models import BindingSet, Template
 class RenderOptions:
     include_audio: bool = False  # see AudioRef.embed_permitted - default False
     resolution: tuple[int, int] = (1080, 1920)
+    # Gap found during Unit 2.5 (ffmpeg engine): the interface had no way
+    # for a caller to say where the output should go - every engine
+    # defaulted to inventing its own temp path. None = engine picks a temp
+    # path and returns it via RenderReport.output_path.
+    output_path: Path | None = None
 
 
 @dataclass
