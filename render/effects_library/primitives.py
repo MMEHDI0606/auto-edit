@@ -31,9 +31,35 @@ PRIMITIVE_PARAM_CONTRACTS: dict[str, dict] = {
 }
 
 
+
+# Maps every schemas.models.MotionPrimitive value to the nearest name that
+# actually appears as a key in PRIMITIVE_PARAM_CONTRACTS above. Deviates
+# from the literal example in INSTRUCTIONS.md Unit 2.6 ("whip_pan -> pan")
+# because that example doesn't match this scaffold's real data: whip_pan
+# IS already a full contract above, and there is no standalone "pan"
+# entry - so the sensible fallback direction is the other way (pan -> the
+# nearest thing that exists, whip_pan), not what the example literally
+# said. Primitives that are already supported (or need no substitution at
+# all) map to themselves so every MotionPrimitive value has SOME entry:
+#   - static: no motion primitive needed at all - caller renders a plain
+#     static frame for the duration, this isn't really a "fallback."
+#   - keyframed: the renderer applies MotionCurve.raw_keyframes directly;
+#     there's no primitive to substitute, the raw curve IS the render.
+_FALLBACK_TABLE: dict[str, str] = {
+    "punch_in": "punch_in",
+    "slow_push": "slow_push",
+    "zoom_out_reveal": "punch_in",  # inverse direction, closest available scale-ramp primitive
+    "pan": "whip_pan",  # no standalone "pan" render primitive exists - whip_pan is the closest translation-based one
+    "whip": "whip_pan",  # exact semantic match (whip_pan IS what "whip" renders as)
+    "static": "static",
+    "keyframed": "keyframed",
+}
+_DEFAULT_FALLBACK = "static"  # safest universal fallback for a name outside MotionPrimitive entirely
+
+
 def nearest_fallback_primitive(unknown_primitive_name: str) -> str:
     """Returns the closest supported primitive name for something L1
     flagged that has no exact library match. Must always return SOMETHING
     (never None/raise) - the caller is responsible for logging the
     degradation into RenderReport.approximations."""
-    raise NotImplementedError
+    return _FALLBACK_TABLE.get(unknown_primitive_name, _DEFAULT_FALLBACK)
