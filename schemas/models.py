@@ -367,6 +367,13 @@ class Template(BaseModel):
     source_trace_hash: str
     slots: list[Slot]
     audio_ref: AudioRef
+    # GAP FOUND during Unit 2.7 (render/): the original scaffold's Template
+    # carried slots but never carried text_layers - compile_template() computed
+    # confidence_flags from trace.text_layers but never put the layers
+    # themselves into the compiled output, so a render engine had literally
+    # nothing to draw kinetic captions from. Text layers are timeline-space
+    # (not per-slot), so they live at the Template level, same as trace.text_layers.
+    text_layers: list[TextLayer] = Field(default_factory=list)
     confidence_flags: list[str] = Field(
         default_factory=list,
         description="Human-readable list of low-confidence approximations "

@@ -103,6 +103,27 @@ def test_low_confidence_font_flags() -> None:
     assert any("Poppins" in f and "low confidence" in f for f in template.confidence_flags)
 
 
+def test_text_layers_carry_through_to_compiled_template() -> None:
+    # Regression guard: the original schema had no Template.text_layers
+    # field at all, so compile_template silently dropped every on-screen
+    # text layer - a render engine would have nothing to draw kinetic
+    # captions from. Confirms the layer itself (not just its confidence
+    # flag side-effect) survives compilation.
+    layer = TextLayer(
+        id="t1",
+        t_in=0.2,
+        t_out=1.0,
+        string="HOOK",
+        role="hook_title",
+        box=TextBox(x=0.5, y=0.5, w=0.3),
+        style=TextStyle(font_guess="Poppins", font_confidence=0.9, size_rel=0.05),
+        animation=TextLayerAnimation(**{"in": "fade", "out": "fade", "in_duration_f": 6}),
+    )
+    template = compile_template(_trace([_clean_shot("s1", 0.0, 1.0)], text_layers=[layer]))
+    assert len(template.text_layers) == 1
+    assert template.text_layers[0].string == "HOOK"
+
+
 def test_audio_ref_never_permits_embedding() -> None:
     template = compile_template(_trace([_clean_shot("s1", 0.0, 1.0)]))
     assert template.audio_ref.embed_permitted is False

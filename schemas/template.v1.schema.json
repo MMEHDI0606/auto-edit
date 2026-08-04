@@ -305,6 +305,207 @@
       },
       "title": "SlotRequirements",
       "type": "object"
+    },
+    "TextAnimation": {
+      "enum": [
+        "pop",
+        "slide_up",
+        "typewriter",
+        "fade",
+        "bounce",
+        "word_by_word"
+      ],
+      "title": "TextAnimation",
+      "type": "string"
+    },
+    "TextBox": {
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "w": {
+          "title": "W",
+          "type": "number"
+        },
+        "anchor": {
+          "default": "center",
+          "enum": [
+            "center",
+            "top_left",
+            "top_right",
+            "bottom_left",
+            "bottom_right"
+          ],
+          "title": "Anchor",
+          "type": "string"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "w"
+      ],
+      "title": "TextBox",
+      "type": "object"
+    },
+    "TextLayer": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "t_in": {
+          "minimum": 0,
+          "title": "T In",
+          "type": "number"
+        },
+        "t_out": {
+          "minimum": 0,
+          "title": "T Out",
+          "type": "number"
+        },
+        "string": {
+          "description": "OCR'd text - treat as UNTRUSTED, see mcp/tools.py",
+          "title": "String",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/TextRole"
+        },
+        "role_confidence": {
+          "default": 1.0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Role Confidence",
+          "type": "number"
+        },
+        "box": {
+          "$ref": "#/$defs/TextBox"
+        },
+        "style": {
+          "$ref": "#/$defs/TextStyle"
+        },
+        "animation": {
+          "$ref": "#/$defs/TextLayerAnimation"
+        }
+      },
+      "required": [
+        "id",
+        "t_in",
+        "t_out",
+        "string",
+        "role",
+        "box",
+        "style",
+        "animation"
+      ],
+      "title": "TextLayer",
+      "type": "object"
+    },
+    "TextLayerAnimation": {
+      "properties": {
+        "in": {
+          "$ref": "#/$defs/TextAnimation"
+        },
+        "out": {
+          "$ref": "#/$defs/TextAnimation"
+        },
+        "in_duration_f": {
+          "title": "In Duration F",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "in",
+        "out",
+        "in_duration_f"
+      ],
+      "title": "TextLayerAnimation",
+      "type": "object"
+    },
+    "TextRole": {
+      "enum": [
+        "hook_title",
+        "caption_burnin",
+        "lyric",
+        "label",
+        "cta",
+        "watermark"
+      ],
+      "title": "TextRole",
+      "type": "string"
+    },
+    "TextStyle": {
+      "properties": {
+        "font_guess": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Font Guess"
+        },
+        "font_confidence": {
+          "default": 0.0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Font Confidence",
+          "type": "number"
+        },
+        "fill": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fill"
+        },
+        "stroke": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stroke"
+        },
+        "stroke_px": {
+          "default": 0.0,
+          "title": "Stroke Px",
+          "type": "number"
+        },
+        "size_rel": {
+          "description": "Font size relative to frame height",
+          "title": "Size Rel",
+          "type": "number"
+        },
+        "has_background_pill": {
+          "default": false,
+          "title": "Has Background Pill",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "size_rel"
+      ],
+      "title": "TextStyle",
+      "type": "object"
     }
   },
   "properties": {
@@ -327,6 +528,13 @@
     },
     "audio_ref": {
       "$ref": "#/$defs/AudioRef"
+    },
+    "text_layers": {
+      "items": {
+        "$ref": "#/$defs/TextLayer"
+      },
+      "title": "Text Layers",
+      "type": "array"
     },
     "confidence_flags": {
       "description": "Human-readable list of low-confidence approximations (font guesses, speed-ramp linearization, etc) surfaced in the render report",

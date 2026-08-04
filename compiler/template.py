@@ -78,5 +78,6 @@ def compile_template(trace: EditTrace, *, semantics: SemanticAnnotations | None 
         source_trace_hash=trace.source.hash,
         slots=slots,
         audio_ref=audio_ref,
+        text_layers=trace.text_layers,
         confidence_flags=confidence_flags,
     )
