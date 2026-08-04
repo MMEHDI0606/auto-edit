@@ -55,5 +55,22 @@ class RenderEngine(ABC):
 def get_engine(name: str) -> RenderEngine:
     """Factory. `name` should come from common.config.Settings.
     primary_render_engine unless the caller explicitly overrides (e.g. MCP
-    tool param, spec sec 9.3 recut.render future extension)."""
-    raise NotImplementedError
+    tool param, spec sec 9.3 recut.render future extension).
+
+    Imports engine modules lazily (inside the function body) rather than
+    at module level - render/interface.py is imported BY every engine
+    module, so a top-level import here would be circular.
+    """
+    from render.engines.ffmpeg_engine import FfmpegEngine
+    from render.engines.remotion_engine import RemotionEngine
+    from render.engines.revideo_engine import RevideoEngine
+
+    engines: dict[str, type[RenderEngine]] = {
+        "ffmpeg": FfmpegEngine,
+        "remotion": RemotionEngine,
+        "revideo": RevideoEngine,
+    }
+    engine_cls = engines.get(name)
+    if engine_cls is None:
+        raise ValueError(f"Unknown render engine {name!r}, expected one of {sorted(engines)}")
+    return engine_cls()
