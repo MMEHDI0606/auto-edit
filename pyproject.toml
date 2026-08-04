@@ -40,6 +40,11 @@ ocr = [
     "paddlepaddle==2.6.2",  # NOT 3.x - paddleocr 2.9.1 targets paddle 2.x; 3.x's oneDNN backend
                             # changes broke inference with "OneDnnContext does not have the input Filter"
 ]
+semantics = [
+    "anthropic==0.120.2",  # Unit 3.3 - primary L2 provider, see semantics/providers/anthropic_provider.py.
+                           # Model id pinned in code (AnthropicProvider.model_id), verified live against
+                           # platform.claude.com/docs/en/about-claude/models/overview.md, NOT hand-guessed.
+]
 local-vlm = []  # fill in when semantics/providers/local_provider.py is implemented
 audio-sep = ["demucs==4.1.0"]  # pulled in only where signals/audio.py::separate_speech_music is used - heavy (torch)
 golden-import = [

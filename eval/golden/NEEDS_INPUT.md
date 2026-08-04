@@ -94,3 +94,22 @@ dataset could shortcut the golden set. Findings, so this isn't repeated:
 
 Net effect: no shortcut found. The LinkedIn ask (Path A/B above) remains
 the real way to grow this set.
+
+## Phase 3 Unit 3.3 gate - blocked the same way, different resource
+
+`AnthropicProvider.triage()` is implemented and unit-tested (fake-client
+request/response shape, `tests/semantics/test_anthropic_provider.py`), but
+its own done criterion - "running triage() against 3-5 real videos produces
+a StyleSummary that reads as a plausible description when you compare it to
+the actual video" - needs two things neither present in this environment:
+
+- a real `ANTHROPIC_API_KEY` (none set - real calls cost real money, not
+  something to fabricate a "pass" for), and
+- real short-form video content (same blocker as Unit 0.3/1.19 above - only
+  synthetic fixtures exist).
+
+Same posture as the Phase 1/2 gates: implementation proceeds, only the
+human/resource-gated numeric verification waits. Unblock by supplying an
+API key (env var `ANTHROPIC_API_KEY`) plus 3-5 real videos, or explicit
+go-ahead to run this against whatever real footage eventually arrives via
+the Path A/B ask above.
