@@ -178,6 +178,74 @@ the default, hosted mode is additive, not a replacement).
 
 ---
 
+## Phase 4.5 — Conversational interface (L7)
+
+New phase, not in the original spec's build order — added for the
+first-class built-in chat requirement (see `DESIGN_NOTES.md` §15,
+`RECUT_SPEC.md` §9A). Numbered 4.5 deliberately (not folded into Phase 4
+or renumbering Phase 5 onward) so every existing cross-reference to
+"Phase 5" elsewhere in this document and in `INSTRUCTIONS.md` stays valid.
+Sequenced after Phase 4a specifically — L7 reuses `mcp/tools.py`'s function
+implementations directly (§15.1), so those need to be real, not
+`NotImplementedError` stubs, before L7's tool-calling loop has anything
+real to call. Independent of Phase 4b (hosted HTTP+OAuth) and of Phase 5.
+
+### 4.5a — Provider abstraction + OpenAI-compatible providers
+1. `chat/schemas.py` + `chat/tool_registry.py` — the shared `ChatMessage`/
+   `ToolCall`/`ToolSpec`/`ChatCompletionResult` dataclasses and the
+   registry that wraps `mcp/tools.py`'s functions (plus the new
+   `adjust_template`, added to `compiler/template.py` + `mcp/tools.py` in
+   Phase 4's Unit 4.3b) as `ToolSpec`s, reusing their docstrings verbatim
+   as tool descriptions.
+2. `chat/providers/base.py` — the `ChatProvider` ABC.
+3. `chat/providers/openai_compatible.py` — the shared base adapter, then
+   the four thin concrete providers (OpenAI, NVIDIA NIM, OpenRouter,
+   vLLM) as config-only subclasses/factories.
+
+**Done when:** at least one OpenAI-compatible provider completes a real
+round trip (model requests a tool call → loop executes it → model produces
+final text) against a live endpoint.
+
+### 4.5b — Gemini adapter (real adapter, not a config variant)
+1. `chat/providers/gemini.py` — hand-written message/role/function-call
+   conversion per the deltas in `RECUT_SPEC.md` §9A.4 /
+   `DESIGN_NOTES.md` §15.3.
+
+**Done when:** Gemini completes the same round-trip test as 4.5a,
+including a case where the model returns more than one `function_call`
+part in a single turn.
+
+### 4.5c — Tool-calling loop, session handling, chat API endpoint
+1. `chat/loop.py` + `chat/session.py` — bounded tool-calling loop
+   (`max_tool_iterations`, hard stop, never an infinite loop), untrusted-
+   text wrapping reused from `mcp/tools.py::wrap_untrusted_text()`, Redis-
+   backed session persistence reusing the Phase 4a job-store infra.
+2. `chat/providers/factory.py` — config-driven provider selection so
+   nothing above this layer imports a concrete provider class directly.
+3. `api/main.py` — `POST /chat/{session_id}/message` (or session-creating
+   variant), non-streaming for v1.
+
+**Done when:** a scripted multi-turn conversation against the chat API
+endpoint (not just in-process) drives `list_slots` → `bind` → `render`
+through natural language, and session persistence is proven by a
+follow-up message that correctly references the prior turn.
+
+**Phase 4.5 exit gate:** at least 2 of the 5 required providers are fully
+working end-to-end through the chat API endpoint — recommend one
+OpenAI-compatible provider plus Gemini, since those are the two
+structurally distinct shapes (§15.3); the remaining OpenAI-compatible
+variants (NIM, OpenRouter, vLLM) are mechanical config additions once the
+base adapter works and should follow immediately after, but are not
+blocking for calling this phase "proven." Streaming and an optional
+Anthropic chat adapter are explicitly deferred (see `INSTRUCTIONS.md` Unit
+4.5.9) — not required for this gate.
+
+Note for Phase 5.5 (thin web UI): the chat *widget* frontend is in that
+phase's scope, calling the `POST /chat/...` endpoint built here — Phase
+5.5 does not need to re-decide chat transport or provider abstraction.
+
+---
+
 ## Phase 5 — Library + product surface
 
 1. **Legal review gate, before anything else in this phase**: decide

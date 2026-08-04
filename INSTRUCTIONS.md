@@ -1267,6 +1267,75 @@ bindings + confidences come back, call `bind` with the user accepting (or
 overriding) them, confirm a `binding_id` is returned and retrievable.
 **Dependencies.** Units 4.2, Phase 2/3's compiler and matcher.
 
+### Unit 4.3b — Template mutation (`adjust_template`)
+**Scope.** Implement `compiler/template.py::adjust_template()` (pure
+function, no MCP/business-logic mixed in — the actual math, testable
+without a running server) and the corresponding
+`mcp/tools.py::adjust_template()` thin wrapper. Added while designing L7
+(see `DESIGN_NOTES.md` §15.4): the existing tool surface (Units 4.2-4.4)
+lets an agent *bind assets* and *render*, but has no lever for "make this
+punchier" or "recreate this edit style but slower" — every other example
+request in the L7 requirement maps onto an existing tool ("swap the clip
+in slot 3" → `bind`); this one didn't, so it's added here rather than left
+as a silent gap. Useful from any MCP client, not just L7's chat loop — this
+unit belongs in Phase 4, not Phase 4.5.
+**Implementation.**
+- Add `Template.derived_from: Optional[str] = None` to `schemas/models.py`
+  (lineage — an adjusted template is a NEW template, never an in-place
+  mutation of the source). Regenerate the JSON schema per Unit 0.2's
+  discipline (`python schemas/generate_json_schema.py`, review the diff).
+- `compiler/template.py::adjust_template(template: Template, changes:
+  TemplateAdjustment) -> Template` where `TemplateAdjustment` (new
+  dataclass in `compiler/schemas.py` or inline in `template.py` — small
+  enough not to need its own file) is a **small, fixed, validated
+  vocabulary**, not free-form: `global_duration_scale: float | None`
+  (bounded, e.g. reject outside `[0.5, 2.0]` — raise `ValueError` rather
+  than silently clamping, so a caller passing a nonsense value finds out
+  immediately), `energy_bias: Literal["punchier", "calmer"] | None`,
+  `slot_overrides: dict[str, dict] | None`. This is the L3-level analogue
+  of evidence gating: the caller (human, MCP agent, or L7's chat model)
+  picks a knob from this constrained schema; this function computes the
+  actual new numbers — the caller never supplies a raw `duration_s`.
+  - `global_duration_scale`: for every slot, multiply `duration_s` and both
+    `duration_flex.min_s`/`max_s` by the scale factor, then re-run
+    `compiler/beat_snap.py::snap_duration_to_beat()` (Unit 2.2 — reuse, do
+    not reimplement) against the template's `audio_ref.beat_grid_s` so the
+    rescaled durations still land on beats where possible.
+  - `energy_bias="punchier"`: for every slot, set `duration_s` toward
+    `duration_flex.min_s` (e.g. move 50% of the way from current to min,
+    not straight to min — a starting heuristic, tune later) and bump
+    `requirements.motion_pref` one bucket toward `"high"` if not already
+    there. `"calmer"` is the mirror (toward `max_s`, bucket toward `"low"`).
+    Neither ever adds a motion primitive or effect the shot doesn't already
+    have — this only remaps existing fields, never invents new evidenced
+    claims (the "LLM never measures" rule extended to L3 math).
+  - `slot_overrides`: per-slot dict of the same two knobs, applied after
+    the global ones, for slot-specific correction.
+  - Returns a new `Template` with a freshly generated
+    `source_trace_hash`-preserving copy (same trace, different template
+    id/lineage) and `derived_from = source_template.template_id` (add a
+    `template_id` field alongside `source_trace_hash` if one doesn't
+    already exist by this point — check `schemas/models.py` first, this
+    may already be needed for Unit 4.3's `get_template`/`describe_template`
+    keying and just not surfaced yet).
+- `mcp/tools.py::adjust_template(template_id: str, changes: dict) ->
+  dict`: thin wrapper — load the template by id, construct
+  `TemplateAdjustment` from `changes` (raise a clear validation error, not
+  a stack trace, on an unknown key or out-of-range value), call
+  `compiler.template.adjust_template()`, persist the result, return
+  `{"new_template_id": ...}`.
+**Done criteria.** Unit test: given a real compiled `Template`,
+`global_duration_scale=1.25` produces a new template whose slot durations
+are all ~25% longer (within beat-snap tolerance) and whose
+`derived_from` points at the source; `energy_bias="punchier"` on a
+template with mixed `motion_pref` values measurably shifts durations
+shorter and motion_pref buckets upward without adding any effect not
+already present on the source shots (assert this explicitly — it's the
+regression this unit exists to prevent). `adjust_template(template_id,
+{"global_duration_scale": 99})` (out of the `[0.5, 2.0]` bound) raises a
+clear validation error via the MCP wrapper, not a silent clamp.
+**Dependencies.** Units 2.2, 2.3, 4.3.
+
 ### Unit 4.4 — MCP tools: render/library group
 **Scope.** Implement `preview()`, `render()`, `get_render()`,
 `search_library()`.
@@ -1342,6 +1411,481 @@ hosted-mode-capable client.
 decision to actually pursue hosted mode at all (see `DESIGN_NOTES.md` §13
 — local-first is the default; only build this when hosted mode is a real
 near-term goal, not speculatively).
+
+---
+
+## PHASE 4.5 — Conversational interface (L7)
+
+Numbered 4.5, not folded into Phase 4 or renumbered as part of Phase 5, so
+every existing cross-reference to "Phase 5"/"Unit 5.x" elsewhere in this
+document stays valid (see `BUILD_ORDER.md` Phase 4.5 for the phase-level
+framing and gate; this section is the unit-by-unit execution companion).
+Sequenced after Unit 4.3b and Unit 4.4 — L7 imports `mcp/tools.py`'s
+functions directly and calls them in-process (`DESIGN_NOTES.md` §15.1), so
+those need to be real implementations by this point, not
+`NotImplementedError` stubs.
+
+### Unit 4.5.1 — Chat schemas + tool registry
+**Scope.** Implement `chat/schemas.py` (dataclasses) and
+`chat/tool_registry.py` (the `CHAT_TOOL_SURFACE` list). No provider code
+yet — this unit only defines the shapes both the loop and every provider
+adapter will consume.
+**Implementation.**
+- `chat/schemas.py`:
+  ```python
+  from dataclasses import dataclass
+  from typing import Literal, Any, Callable
+
+  @dataclass
+  class ToolCall:
+      id: str
+      name: str
+      arguments: dict[str, Any]        # already-parsed, never a raw JSON string
+
+  @dataclass
+  class ChatMessage:
+      role: Literal["system", "user", "assistant", "tool"]
+      content: str | None
+      tool_calls: list[ToolCall] | None = None   # set on assistant messages requesting calls
+      tool_call_id: str | None = None            # set on tool messages: which call this answers
+      name: str | None = None                    # set on tool messages: tool name
+
+  @dataclass
+  class ToolSpec:
+      name: str
+      description: str                  # reused verbatim from the wrapped function's docstring
+      parameters_schema: dict            # JSON Schema (Draft 2020-12), model-facing params only
+      callable: Callable[..., dict]      # the actual function to invoke
+
+  @dataclass
+  class TokenUsage:
+      prompt_tokens: int
+      completion_tokens: int
+
+  @dataclass
+  class ChatCompletionResult:
+      message: ChatMessage
+      finish_reason: Literal["stop", "tool_calls", "length", "content_filter"]
+      raw_model_id: str
+      usage: TokenUsage | None = None
+  ```
+- `chat/tool_registry.py`: build `CHAT_TOOL_SURFACE: list[ToolSpec]` by
+  importing `mcp.tools` and wrapping each function. Two concrete examples
+  to follow exactly (write the rest of the ~12 tools — `analyze_video`,
+  `get_job`, `get_trace`, `get_template`, `describe_template`,
+  `register_assets`, `match_assets`, `preview`, `get_render`,
+  `search_library`, `adjust_template` — the same way):
+  ```python
+  ToolSpec(
+      name="list_slots",
+      description=mcp.tools.list_slots.__doc__,
+      parameters_schema={
+          "type": "object",
+          "properties": {"template_id": {"type": "string"}},
+          "required": ["template_id"],
+      },
+      callable=mcp.tools.list_slots,
+  )
+
+  ToolSpec(
+      name="bind",
+      description=mcp.tools.bind.__doc__,
+      parameters_schema={
+          "type": "object",
+          "properties": {
+              "template_id": {"type": "string"},
+              "slot_to_asset": {
+                  "type": "object",
+                  "additionalProperties": {"type": "string"},
+                  "description": "slot_id -> asset_id",
+              },
+          },
+          "required": ["template_id", "slot_to_asset"],
+      },
+      callable=mcp.tools.bind,
+  )
+  ```
+  **`render` is a deliberate exception**: `idempotency_key` must NOT appear
+  in its `parameters_schema` (a chat model has no sensible way to invent
+  one, and letting it try defeats the point — spec §9A.3). Instead wrap
+  `mcp.tools.render` in a small adapter function that generates
+  `str(uuid.uuid4())` per invocation and passes it through positionally,
+  and register *that* adapter as the `ToolSpec.callable`, e.g.:
+  ```python
+  def _render_tool(binding_id: str, include_audio: bool = False,
+                    resolution: tuple[int, int] = (1080, 1920)) -> dict:
+      return mcp.tools.render(binding_id, include_audio, resolution,
+                               idempotency_key=str(uuid.uuid4()))
+
+  ToolSpec(
+      name="render",
+      description=mcp.tools.render.__doc__,
+      parameters_schema={
+          "type": "object",
+          "properties": {
+              "binding_id": {"type": "string"},
+              "include_audio": {"type": "boolean", "default": False},
+              "resolution": {"type": "array", "items": {"type": "integer"},
+                             "minItems": 2, "maxItems": 2, "default": [1080, 1920]},
+          },
+          "required": ["binding_id"],
+      },
+      callable=_render_tool,
+  )
+  ```
+**Done criteria.** `len(CHAT_TOOL_SURFACE)` covers every tool in
+`mcp/tools.py` (including Unit 4.3b's `adjust_template`) except none are
+accidentally omitted (write a test that diffs the registry's tool names
+against `mcp.tools`'s public function names, minus `wrap_untrusted_text`
+which is a helper, not a tool). Every `parameters_schema` passes
+`jsonschema.Draft202012Validator.check_schema(...)` without raising.
+`render`'s schema does not contain `idempotency_key`. Every other
+`ToolSpec.callable` is the *exact same function object* as in `mcp.tools`
+(assert identity, e.g. `ToolSpec_for_list_slots.callable is
+mcp.tools.list_slots`) — this guards against someone copy-pasting tool
+logic into the registry instead of reusing it, which is the specific
+anti-pattern §15.1 argues against.
+**Dependencies.** Units 4.2-4.4, 4.3b (needs real tool implementations to
+wrap meaningfully, though the schema/plumbing shape can be drafted against
+the stubs earlier if useful).
+
+### Unit 4.5.2 — `ChatProvider` interface
+**Scope.** Implement `chat/providers/base.py`.
+**Implementation.**
+  ```python
+  from abc import ABC, abstractmethod
+  from chat.schemas import ChatMessage, ToolSpec, ChatCompletionResult
+
+  class ChatProviderError(Exception):
+      def __init__(self, message: str, *, retryable: bool):
+          super().__init__(message)
+          self.retryable = retryable   # loop.py's retry policy reads this
+
+  class ChatProvider(ABC):
+      model_id: str          # pinned exact string, never a floating alias
+      supports_streaming: bool = False
+
+      @abstractmethod
+      def complete(self, messages: list[ChatMessage], tools: list[ToolSpec],
+                   *, temperature: float = 0.3, max_tokens: int = 1024,
+                   ) -> ChatCompletionResult:
+          """One turn: given full message history + available tools, return
+          either a tool-call request or final assistant text."""
+
+      def stream(self, messages: list[ChatMessage], tools: list[ToolSpec], **kw):
+          """Optional; default raises. See DESIGN_NOTES.md sec 15.2 -
+          streaming is deferred at the method level, not the provider level."""
+          raise NotImplementedError
+  ```
+**Done criteria.** Mirrors `semantics/providers/base.py`'s docstring
+discipline (record why the interface is shaped this way). Unit test:
+construct a minimal in-test subclass implementing only `complete()`,
+confirm the ABC does not require `stream()` to be overridden, and confirm
+instantiating `ChatProvider` directly raises `TypeError` (abstract method
+not implemented).
+**Dependencies.** Unit 4.5.1.
+
+### Unit 4.5.3 — OpenAI-compatible base adapter
+**Scope.** Implement `chat/providers/openai_compatible.py::
+OpenAICompatibleProvider`. This is the shared adapter that Unit 4.5.4's
+four concrete providers subclass/configure — get the message-conversion
+logic right once, here.
+**Implementation.**
+  ```python
+  from openai import OpenAI
+  import json
+
+  class OpenAICompatibleProvider(ChatProvider):
+      def __init__(self, *, base_url: str, api_key: str, model_id: str,
+                   extra_headers: dict[str, str] | None = None):
+          self.model_id = model_id
+          self._client = OpenAI(base_url=base_url, api_key=api_key,
+                                 default_headers=extra_headers or {})
+
+      def complete(self, messages, tools, *, temperature=0.3, max_tokens=1024):
+          oa_messages = [self._to_openai_message(m) for m in messages]
+          oa_tools = [{"type": "function", "function": {
+              "name": t.name, "description": t.description,
+              "parameters": t.parameters_schema}} for t in tools]
+          try:
+              resp = self._client.chat.completions.create(
+                  model=self.model_id, messages=oa_messages,
+                  tools=oa_tools or None, tool_choice="auto" if oa_tools else None,
+                  temperature=temperature, max_tokens=max_tokens,
+              )
+          except Exception as e:      # openai SDK raises typed errors; map rate-limit/timeout
+              raise ChatProviderError(str(e), retryable=_is_retryable(e)) from e
+          choice = resp.choices[0]
+          return ChatCompletionResult(
+              message=self._from_openai_message(choice.message),
+              finish_reason=choice.finish_reason,
+              raw_model_id=resp.model,
+              usage=TokenUsage(resp.usage.prompt_tokens, resp.usage.completion_tokens)
+                    if resp.usage else None,
+          )
+  ```
+  `_to_openai_message`: map `ChatMessage(role="tool", tool_call_id=...,
+  name=...)` to OpenAI's `{"role": "tool", "tool_call_id": ..., "content":
+  ...}` shape (content must be a string — `json.dumps` a dict tool result);
+  map `role="assistant"` with `tool_calls` set to OpenAI's `{"role":
+  "assistant", "tool_calls": [{"id":..., "type":"function", "function":
+  {"name":..., "arguments": json.dumps(...)}}]}`.
+  `_from_openai_message`: parse `choice.message.tool_calls` (if present)
+  into `list[ToolCall]`, calling `json.loads(tc.function.arguments)` inside
+  a `try/except json.JSONDecodeError` that re-raises as
+  `ChatProviderError(..., retryable=False)` — a model emitting malformed
+  JSON arguments is not something retrying the same call fixes.
+**Done criteria.** Against a real OpenAI-compatible endpoint (OpenAI
+itself is the simplest to verify against first), a scripted call with one
+trivial `ToolSpec` (e.g. a fake `get_current_slot_count` tool backed by a
+Python lambda) completes the full round trip: model requests the tool call
+→ test code executes it → feeds the result back as a `role="tool"` message
+→ model produces final text referencing the result.
+**Dependencies.** Unit 4.5.2.
+
+### Unit 4.5.4 — OpenAI, NVIDIA NIM, OpenRouter, vLLM concrete providers
+**Scope.** Four thin subclasses/factories of `OpenAICompatibleProvider`,
+plus the `Settings` fields each reads from.
+**Implementation.** Add to `common/config.py::Settings` (same
+"unset-pin-before-X" discipline as `triage_model_id`):
+  ```python
+  chat_openai_api_key: str | None = None
+  chat_openai_base_url: str = "https://api.openai.com/v1"
+  chat_openai_model_id: str = "unset-pin-before-4.5.4"
+
+  chat_nim_api_key: str | None = None
+  chat_nim_base_url: str = "https://integrate.api.nvidia.com/v1"
+  chat_nim_model_id: str = "unset-pin-before-4.5.4"
+
+  chat_openrouter_api_key: str | None = None
+  chat_openrouter_base_url: str = "https://openrouter.ai/api/v1"
+  chat_openrouter_model_id: str = "unset-pin-before-4.5.4"
+  chat_openrouter_site_url: str | None = None    # OpenRouter attribution header
+  chat_openrouter_site_name: str | None = None
+
+  chat_vllm_base_url: str | None = None          # no sane default - user's own endpoint
+  chat_vllm_api_key: str = "not-needed"          # vLLM's default server doesn't check it
+  chat_vllm_model_id: str = "unset-pin-before-4.5.4"
+  ```
+  `OpenAIProvider(OpenAICompatibleProvider)`: base_url/api_key/model_id
+  from the `chat_openai_*` settings, no extra headers.
+  `NvidiaNIMProvider`: same pattern with `chat_nim_*`. **Caveat, verify
+  before assuming it works:** not every NIM-hosted model checkpoint
+  supports function calling — check the specific model's NVIDIA model card
+  for tool-calling support before pinning `chat_nim_model_id`, same
+  "don't hand-guess" discipline as the `claude-api` skill note elsewhere.
+  `OpenRouterProvider`: `chat_openrouter_*` settings, and
+  `extra_headers={"HTTP-Referer": settings.chat_openrouter_site_url,
+  "X-Title": settings.chat_openrouter_site_name}` per OpenRouter's
+  attribution convention. **Caveat:** OpenRouter is a router — tool-calling
+  behavior is inherited from whichever underlying model `chat_
+  openrouter_model_id` selects (OpenRouter's own `vendor/model` naming,
+  e.g. `"openai/gpt-..."` vs `"meta-llama/..."`); verify the selected
+  model's OpenRouter listing actually advertises tool-calling support.
+  `VLLMProvider`: `chat_vllm_*` settings. **Caveat, real and non-optional
+  to document:** tool-calling only works if vLLM was launched with
+  `--enable-auto-tool-choice --tool-call-parser <parser matching the
+  served model>` (e.g. `hermes` for Qwen/Hermes-format models, `llama3_json`
+  for Llama 3.x, `mistral` for Mistral-format models) — record which
+  parser/model combination was actually tested in a comment next to
+  `VLLMProvider`, and if tool_calls come back empty/malformed repeatedly
+  for a configured model, surface a clear diagnostic (log the raw
+  response) rather than treating it as "the model chose not to call a
+  tool," which is a different and misleading failure mode.
+**Done criteria.** Each of the 4 providers instantiable via
+`build_provider()` (Unit 4.5.7) reading only from `Settings`. At minimum
+OpenAI and one other (NIM or OpenRouter, whichever credential is available
+at build time) complete Unit 4.5.3's round-trip test through their own
+subclass. vLLM's round trip requires a locally-running vLLM instance —
+if none is available at build time, explicitly note this as deferred
+verification in a comment, do not mark the unit done on unverified vLLM
+behavior.
+**Dependencies.** Unit 4.5.3.
+
+### Unit 4.5.5 — Gemini adapter (real adapter)
+**Scope.** Implement `chat/providers/gemini.py::GeminiChatProvider`. Named
+distinctly from `semantics/providers/gemini_provider.py` (different
+package, different job — do not merge or import between them).
+**Implementation.**
+  ```python
+  from google import genai
+  from google.genai import types
+
+  class GeminiChatProvider(ChatProvider):
+      def __init__(self, *, api_key: str, model_id: str):
+          self.model_id = model_id
+          self._client = genai.Client(api_key=api_key)
+
+      def complete(self, messages, tools, *, temperature=0.3, max_tokens=1024):
+          system_text, contents = self._split_system_and_convert(messages)
+          fn_decls = [types.FunctionDeclaration(
+              name=t.name, description=t.description, parameters=t.parameters_schema,
+          ) for t in tools]
+          config = types.GenerateContentConfig(
+              system_instruction=system_text,
+              tools=[types.Tool(function_declarations=fn_decls)] if fn_decls else None,
+              tool_config=types.ToolConfig(
+                  function_calling_config=types.FunctionCallingConfig(mode="AUTO")),
+              temperature=temperature, max_output_tokens=max_tokens,
+          )
+          resp = self._client.models.generate_content(
+              model=self.model_id, contents=contents, config=config)
+          return self._from_gemini_response(resp)
+  ```
+  `_split_system_and_convert`: pull any `role="system"` `ChatMessage`s out
+  of the list into a single `system_text` string (Gemini takes this as a
+  separate config field, never a message in `contents`); map remaining
+  `role="user"` → `Content(role="user", parts=[Part(text=...)])`,
+  `role="assistant"` (with no tool_calls) → `Content(role="model",
+  parts=[Part(text=...)])`, `role="assistant"` with `tool_calls` →
+  `Content(role="model", parts=[Part(function_call=...) for each call])`,
+  `role="tool"` → `Content(role="user", parts=[Part(function_response=
+  types.FunctionResponse(name=msg.name, response={"result": <parsed
+  content>}))])` — **note this is `role="user"`, not a `tool` role; Gemini
+  has no third role for this.**
+  `_from_gemini_response`: iterate `resp.candidates[0].content.parts` —
+  a single turn CAN contain multiple `function_call` parts, unlike OpenAI's
+  list-of-tool_calls-on-one-message shape but structurally similar in
+  effect; synthesize `ToolCall.id = f"{part.function_call.name}-{index}"`
+  since Gemini issues no call id. `part.function_call.args` is already a
+  parsed mapping (`dict(part.function_call.args)`), not a JSON string —
+  do NOT call `json.loads` on it, that's an OpenAI-specific step that would
+  raise here.
+**Done criteria.** Same round-trip test as Unit 4.5.3, run against a real
+Gemini endpoint. Additionally, since forcing a real API to return multiple
+function calls in one turn on demand is unreliable, write a unit test that
+mocks `genai.Client.models.generate_content` to return a fixture response
+with 2 `function_call` parts in one candidate, and confirm
+`_from_gemini_response` produces 2 `ToolCall`s with distinct synthesized
+ids, both of which the loop (once Unit 4.5.6 exists) executes and feeds
+back correctly.
+**Dependencies.** Unit 4.5.2. Independent of Units 4.5.3-4.5.4 — can be
+built in parallel.
+
+### Unit 4.5.6 — Tool-calling loop + session handling
+**Scope.** Implement `chat/loop.py::run_turn()` and
+`chat/session.py::ChatSession`.
+**Implementation.**
+- Add to `Settings`: `chat_max_tool_iterations: int = 8`,
+  `chat_session_ttl_s: int = 86400`.
+- `run_turn(provider: ChatProvider, tools: list[ToolSpec], history:
+  list[ChatMessage]) -> ChatMessage`: loop up to
+  `Settings.chat_max_tool_iterations` times. Each iteration: call
+  `provider.complete(history, tools)`; if the result message has no
+  `tool_calls`, append it to `history` and return it (done). If it does,
+  append the assistant tool-call message to `history`, then for each
+  `ToolCall`: look up the matching `ToolSpec` by name, call
+  `spec.callable(**call.arguments)` inside a `try/except Exception`;
+  on success, wrap the result — **any string value anywhere in the result
+  that originated from OCR/transcript/caption text must be passed through
+  `mcp.tools.wrap_untrusted_text()` first** (reuse it, do not reimplement
+  — import it directly); on failure, construct a `{"error": str(e)}`
+  payload instead of letting the exception propagate (a tool error is
+  information the model should get to react to, not a crashed session).
+  Append one `ChatMessage(role="tool", tool_call_id=call.id, name=call.name,
+  content=json.dumps(result))` per call, then continue the loop. If
+  `chat_max_tool_iterations` is exhausted without a final text response,
+  return a `ChatMessage(role="assistant", content="I ran into trouble
+  completing that — here's what I tried: ...")` summarizing the attempted
+  tool calls, rather than raising or looping forever.
+- `ChatSession`: `session_id: str`, `history: list[ChatMessage]`,
+  `send(user_text: str) -> str` — appends a user message, calls
+  `run_turn()`, returns the final assistant text. Persistence: serialize
+  `history` to JSON, store in Redis under `chat_session:{session_id}` with
+  `EX=Settings.chat_session_ttl_s` (reuse the same `redis-py` client
+  pattern as Unit 4.1's job store — same infra, not a new dependency).
+  Load-on-init if a `session_id` is provided and found in Redis; otherwise
+  start empty history with one `role="system"` message (the system prompt
+  — write a short one describing RECUT's tool surface and instructing the
+  model to prefer calling a tool over guessing, and to explain
+  `render_report`/`confidence_flags` approximations to the user in plain
+  language when relevant).
+**Done criteria.** With one working provider (from 4.5.4 or 4.5.5): a
+scripted conversation ("what slots does template X have?" → tool call to
+`list_slots` → "put my beach clip in slot 3" → tool call to `bind`)
+completes with no tool-dispatch code written by the test itself (the loop
+does it). A forced-error test: a `ToolSpec` whose callable always raises
+confirms the loop produces a `role="tool"` error message and the session
+does not crash. A forced-runaway test: a fake `ChatProvider` whose
+`complete()` always returns a tool-call request, never final text,
+confirms the loop hard-stops at `chat_max_tool_iterations` and returns the
+fallback message rather than looping forever. A persistence test: create a
+session, send one message, construct a NEW `ChatSession` object with the
+same `session_id`, confirm the reloaded history includes the prior turn.
+**Dependencies.** Unit 4.5.1, at least one of Units 4.5.4/4.5.5, Unit 4.1
+(Redis infra), `mcp.tools.wrap_untrusted_text`.
+
+### Unit 4.5.7 — Provider selection + config surface
+**Scope.** Implement `chat/providers/factory.py::build_provider()`.
+**Implementation.** Add `chat_provider: Literal["openai", "nim",
+"openrouter", "vllm", "gemini"] | None = None` to `Settings`.
+`build_provider(settings: Settings) -> ChatProvider`: `match
+settings.chat_provider` over the 5 cases, instantiating the corresponding
+concrete class from Units 4.5.4/4.5.5 using that provider's `Settings`
+fields; raise a clear `ValueError` (not an `AttributeError` from a missing
+config field deep inside a provider's `__init__`) if
+`settings.chat_provider` is unset, or if the selected provider's required
+field is unset (e.g. `chat_provider="vllm"` but `chat_vllm_base_url is
+None`) — check required fields explicitly in the factory before
+constructing the provider. No code above this factory (loop, session, API
+endpoint) should ever import a concrete provider class directly — only
+`ChatProvider` (the ABC) and `build_provider`.
+**Done criteria.** Setting `RECUT_CHAT_PROVIDER=openai` (plus its api key)
+via env and calling `build_provider(load_settings())` returns an
+`OpenAIProvider` instance; switching the env var to `gemini` (plus its
+key) with no other code change returns a `GeminiChatProvider` instance.
+Unsetting a required field for the selected provider raises `ValueError`
+with a message naming the missing field, not a stack trace from inside the
+provider constructor.
+**Dependencies.** Units 4.5.4, 4.5.5.
+
+### Unit 4.5.8 — Chat API endpoint
+**Scope.** Add `POST /chat/{session_id}/message` (and a session-creating
+variant, e.g. `POST /chat/message` returning a fresh `session_id` if none
+is supplied) to `api/main.py`.
+**Implementation.** Thin FastAPI endpoint: load or create a `ChatSession`
+(Unit 4.5.6) for the given `session_id`, using `build_provider(load_
+settings())` (Unit 4.5.7) and `chat.tool_registry.CHAT_TOOL_SURFACE` (Unit
+4.5.1), call `session.send(body.message)`, return `{"session_id":...,
+"reply": ...}`. Non-streaming only in this unit — `stream()` is deferred
+(Unit 4.5.9).
+**Done criteria.** Via a FastAPI test client: POST a message, get a reply.
+POST a follow-up to the same `session_id` (e.g. "what did I just ask you
+about?") and confirm the reply demonstrates the model actually has the
+prior turn's context — this is the concrete end-to-end proof that Unit
+4.5.6's session persistence works through the real API layer, not just
+in-process. This is also the **Phase 4.5 exit gate** referenced in
+`BUILD_ORDER.md` once at least 2 structurally-distinct providers pass it.
+**Dependencies.** Units 4.5.6, 4.5.7, Unit 4.1 (existing FastAPI app).
+
+### Unit 4.5.9 — Deferred: streaming + optional Anthropic chat adapter
+**Scope.** Explicitly NOT required for the Phase 4.5 exit gate — flagged
+as its own unit so it's never accidentally treated as blocking, same
+convention as Unit 1.8b (font matching).
+**Implementation.** Streaming: implement `OpenAICompatibleProvider.
+stream()` using the `openai` SDK's `stream=True` + tool-call delta
+accumulation (tool call arguments arrive in fragments across chunks and
+must be concatenated per `tool_call.index` before parsing as JSON) — this
+is the one provider worth streaming first since OpenAI's streaming +
+tool-calls interaction is the best-documented of the five. Optional
+Anthropic adapter: `chat/providers/anthropic_chat.py::
+AnthropicChatProvider` — not requested in the original ask but the
+interface makes it a cheap add for a user who'd rather drive the built-in
+chat with a Claude subscription; uses `client.messages.create(tools=
+[{"name":..., "description":..., "input_schema": t.parameters_schema} for
+t in tools], ...)` (note: `input_schema`, not `parameters` — a real
+naming difference from the OpenAI shape, though structurally closer to
+OpenAI's than Gemini's). Stub this one (`raise NotImplementedError`) until
+a concrete need shows up, per the same "interface-now, implement-later"
+discipline as `semantics/providers/gemini_provider.py` was for L2.
+**Done criteria.** If implemented: streaming produces incremental text
+chunks to the caller and still correctly assembles a complete tool call by
+the end of the stream (test against a forced multi-chunk tool-call-argument
+fixture, since real streaming chunk boundaries aren't guaranteed
+reproducible). If deferred: no done criteria apply, this unit simply isn't
+started yet — do not let it block Phase 5.
+**Dependencies.** Unit 4.5.3 (streaming), Unit 4.5.2 (Anthropic adapter
+shape).
 
 ---
 

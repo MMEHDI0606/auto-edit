@@ -2,7 +2,7 @@
 
 **Working title:** RECUT
 **One-line:** Watch a short-form video, decompose the edit into a machine-readable recipe, and re-render that same edit with someone else's footage.
-**Interface:** Local app + MCP server (usable directly from a Claude / Cursor / OpenClaw subscription).
+**Interface:** Local app + MCP server (usable directly from a Claude / Cursor / OpenClaw subscription) **plus a built-in, provider-agnostic conversational chat UI** (talk to RECUT directly — "make this punchier," "swap the clip in slot 3" — backed by whichever LLM the user configures; see §9A).
 
 ---
 
@@ -14,6 +14,7 @@ Given a URL or an uploaded MP4 of a short-form video (Reels / Shorts / TikTok, 5
 1. An **Edit Trace** — a frame-accurate, evidence-backed description of every cut, motion, text layer, effect, and audio hit.
 2. A **Template** — a parameterized version of that trace with the source footage removed and replaced by **slots**.
 3. A **filled render** — the user drops clips/images in, the system assigns them to slots (or asks the human to), and renders an MP4 matching the original edit.
+4. A **conversational way to do all of the above** — a built-in chat interface, backed by a provider of the user's choice, that turns natural-language requests ("make this punchier," "swap the clip in slot 3," "recreate this edit style but slower") into the same underlying operations (§9.3/§9A) that a human would otherwise drive through MCP or a UI.
 
 ### 0.2 What it explicitly does NOT do
 - It does not copy the original footage.
@@ -44,8 +45,17 @@ A creator or small agency who sees a Reel that performs well and wants to run th
 │ L5  RENDER          Remotion / Revideo → MP4                    │
 ├─────────────────────────────────────────────────────────────────┤
 │ L6  MCP SERVER      exposes L0–L5 as tools/resources to agents  │
+├─────────────────────────────────────────────────────────────────┤
+│ L7  CONVERSATIONAL  built-in, provider-agnostic chat UI; talks  │
+│     INTERFACE       to the SAME operations as L6, in-process    │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+**L7 is drawn beside L6, not stacked on top of it.** Both are thin
+presentation layers over the same L0–L5 operations surface
+(`api/workers.py` + the tool implementations in `mcp/tools.py`). L7 does
+**not** act as an MCP client of RECUT's own L6 server — see §9A for why
+that would be the wrong mechanism despite looking like elegant reuse.
 
 **Core design rule:** the LLM never *measures*. Deterministic tools measure; the LLM only *labels and explains* what the tools found. Every semantic claim in the output must be traceable to a numeric signal. This one rule kills ~80% of the hallucination failure modes you would otherwise hit.
 
@@ -362,6 +372,24 @@ recut.register_assets(files[])            → asset_ids
 recut.match_assets(template_id, asset_ids) → proposed bindings + confidences
 recut.bind(template_id, { slot_id: asset_id }) → binding_id
 
+recut.adjust_template(template_id, changes: {
+    global_duration_scale?: float,       # e.g. 1.25 = 25% slower overall
+    energy_bias?: "punchier"|"calmer",   # biases slot durations toward
+                                          # duration_flex.min_s/max_s and
+                                          # motion_pref, does not invent
+                                          # new motion/effects
+    slot_overrides?: { slot_id: {...} }
+}) → { new_template_id }
+    # Added for §9A (chat) but equally usable from any MCP client. Produces
+    # a NEW template (Template.derived_from = source template_id); never
+    # mutates a template in place. `changes` is a small fixed vocabulary,
+    # not free-form — this is the L3-layer analogue of the evidence-gating
+    # rule: the caller (human, MCP agent, or the L7 chat model) picks a
+    # knob from a constrained, validated schema; RECUT's own deterministic
+    # template math (reusing compiler/beat_snap.py) computes the actual new
+    # duration_s/duration_flex values. The caller never emits a raw number
+    # for an individual shot's timing "from vibes."
+
 recut.preview(binding_id)   → storyboard PNG / short GIF
 recut.render(binding_id, opts:{ include_audio:bool, resolution })
     → { job_id }
@@ -386,6 +414,125 @@ recut.search_library(query, filters) → templates from the seeded library
 
 ---
 
+## 9A. L7 — Conversational interface
+
+### 9A.1 What it is and why it's separate from §9
+§9's MCP server makes RECUT usable from an agent the user *already* pays for
+(Claude Code, Cursor, an OpenClaw-based assistant) — that agent supplies its
+own LLM and does the conversational part for free. This section adds the
+opposite case: a **first-class, built-in chat UI**, shipped as part of the
+RECUT product itself, backed by an LLM the user configures directly (their
+own OpenAI/NIM/OpenRouter/vLLM/Gemini key or endpoint) — for the user who
+doesn't have, or doesn't want to route through, an external agent
+subscription. This is additive, not a replacement for §9; both ship.
+
+### 9A.2 Where it sits
+L7 is a **sibling of L6**, not a layer built on top of it (see §1's
+diagram). Both L6 and L7 are thin presentation wrappers over the same
+underlying operations (`api/workers.py` job functions, exposed as plain
+Python callables in `mcp/tools.py`). Concretely: **L7 does not act as an MCP
+client of RECUT's own L6 server.** That would look like elegant reuse (same
+tool surface, "just point the chat model's tool-calling loop at your own
+MCP endpoint") but the isolation MCP's transport buys — a stable wire
+protocol between two processes that don't already trust each other — is
+irrelevant here, because L7's chat backend and L6's tool implementations run
+in the same deployment and the same trust boundary. Going through a stdio
+subprocess or an HTTP loopback to reach your own in-process functions adds
+serialization/process overhead and a second place tool-call semantics can
+drift, for zero actual isolation benefit. Instead, L7 imports the tool
+functions directly (`from mcp.tools import list_slots, match_assets, bind,
+render, ...`) and reuses their **docstrings and parameter shapes** as its
+own tool specs, so the tool surface and its documentation are defined once
+and consumed by both L6's MCP registration and L7's tool-calling loop.
+
+**This split is exact and one-directional, stated explicitly:** L7's own
+conversational interface (the thing a human types natural language into)
+is reachable **only** via its dedicated API (§9A's chat endpoint,
+`INSTRUCTIONS.md` Unit 4.5.8 — `POST /chat/{session_id}/message`). It is
+**not** registered as an MCP tool or resource — there is no
+`recut.chat(...)` tool, no "chat_with_recut" MCP entry, nothing an
+external MCP client (Claude Code, Cursor, OpenClaw) can call to drive a
+conversation through RECUT's own L7. An external agent that wants
+conversational access to RECUT supplies its own LLM and talks through §9's
+existing MCP tool surface, same as today — that's what §9's tools are for.
+Conversely, everything that isn't L7's chat endpoint — `analyze_video`,
+`get_template`, `match_assets`, `bind`, `render`, `adjust_template`, all of
+it — stays MCP-only, exactly as originally designed; L7's existence is not
+license for any other RECUT capability to grow a second, non-MCP API
+surface. The only new API surface this feature introduces is the one chat
+endpoint itself.
+
+### 9A.3 Tool-calling surface
+L7 exposes the LLM the same operations set as §9.3, unchanged, plus
+`adjust_template` (§9.3, added specifically because "make this punchier" /
+"recreate this edit style but slower" have no lever to pull without a
+template-mutation tool — every other example request in this section maps
+onto an existing tool: "swap the clip in slot 3" → `bind`). One
+model-facing parameter is deliberately hidden from the tool schema:
+`render`'s `idempotency_key` is generated by the tool-calling loop itself
+(a fresh UUID per call), never something the chat model is asked to invent
+— a human casually chatting is not going to supply a sensible idempotency
+key, and letting the model omit or hallucinate one would defeat its purpose
+(§9.4).
+
+### 9A.4 Multi-provider LLM abstraction
+The user must be able to point RECUT's chat at OpenAI, NVIDIA NIM,
+self-hosted vLLM, Google Gemini, or OpenRouter — "effectively all of them."
+This is **not** the same interface as §4.4/§4's `SemanticProvider` (the L2
+model abstraction). The two are different shapes of task on a different
+volatility axis:
+
+| | L2 `SemanticProvider` (§4.4) | L7 chat provider |
+|---|---|---|
+| Call shape | single-shot: evidence pack in, one schema-validated JSON object out | multi-turn: message history + tool definitions in, either a tool call or final text out, looped until done |
+| What varies | which vision model best does evidence-gated shot labeling | which LLM subscription/self-hosted endpoint the *user* already has |
+| Native SDK shape | one structured-output call per pass | streaming-capable chat-completions with function/tool calling |
+
+Reusing `SemanticProvider`'s two fixed methods (`triage`, `deep_pass`) for
+a conversational tool-calling loop would force one of the two use cases to
+distort its natural shape. L7 gets its **own** interface,
+`chat.providers.base.ChatProvider`, structurally parallel to
+`SemanticProvider` (an ABC, pinned `model_id`, "define the interface fully,
+implement adapters as concrete need arises") but with a method shaped for
+multi-turn tool-calling instead of single-shot structured extraction.
+
+**Provider adapters — shim vs. real adapter:**
+- **OpenAI, NVIDIA NIM, OpenRouter, self-hosted vLLM** — all four serve (or
+  can serve) an **OpenAI-compatible** `chat.completions.create(...,
+  tools=[...])` endpoint. One `OpenAICompatibleProvider` base class,
+  parameterized by `base_url`/`api_key`/`model_id`/extra headers, covers all
+  four; the concrete classes are thin subclasses supplying config only. NIM
+  and OpenRouter's OpenAI-compatibility is a genuine one-shim-covers-many
+  case. vLLM is the same wire shape but the *actual* tool-calling behavior
+  depends on the served model's chat template and vLLM being launched with
+  the right `--tool-call-parser` — this is a real operational caveat, not
+  free, even though the code path is shared.
+- **Google Gemini** — genuinely different function-calling shape: separate
+  `system_instruction` (not a "system" role message), `user`/`model` roles
+  (not `user`/`assistant`), tool results sent back as a `function_response`
+  **`user`-role** part (not a `tool`-role message), function-call arguments
+  arrive already parsed as a dict (not a JSON string to `json.loads`), and
+  a single turn can contain multiple `function_call` parts with no
+  provider-issued call id. This needs a real, hand-written adapter.
+
+See `DESIGN_NOTES.md` for the full rationale and `INSTRUCTIONS.md` Phase
+4.5 for exact adapter implementations (library calls, request/response
+shapes).
+
+### 9A.5 Session handling and untrusted text
+Conversation history is session-scoped and persisted (reusing the Redis
+job-store infrastructure already built for §9.4's async job pattern, keyed
+by `session_id`, TTL'd) so a session survives across HTTP requests, not just
+in-process. Any OCR/transcript/caption string that a tool result surfaces
+into the conversation (e.g. `describe_template`'s output, or a `get_trace`
+call the model makes) **must** be passed through the same
+`wrap_untrusted_text()` used by §9.4's MCP tools before it re-enters the
+model's context — arguably higher-stakes here than the external-agent MCP
+case, since the "agent" the untrusted text is being smuggled toward is a
+first-party chat model the end user is casually trusting in real time.
+
+---
+
 ## 10. Tech stack
 
 | Layer | Choice |
@@ -399,6 +546,7 @@ recut.search_library(query, filters) → templates from the seeded library
 | Render | Revideo (primary) / Remotion (adapter), Node worker |
 | Interchange | OpenTimelineIO |
 | MCP | official Python or TS MCP SDK; stdio + streamable HTTP |
+| Chat (L7) | `openai` Python SDK (covers OpenAI, NVIDIA NIM, OpenRouter, vLLM via `base_url` override) + `google-genai` SDK (Gemini); session store reuses Redis (same as the §9.4 job store) |
 
 ---
 
@@ -448,6 +596,9 @@ recut/
 ├── matcher/         probe.py score.py assign.py
 ├── render/          revideo/ remotion/ effects_library/
 ├── mcp/             server.py tools.py auth.py
+├── chat/            providers/ (base.py, openai_compatible.py, gemini.py,
+│                    factory.py) schemas.py tool_registry.py loop.py
+│                    session.py                         # L7, see sec 9A
 ├── eval/            golden/ metrics.py run.py
 ├── schemas/         trace.v1.json template.v1.json
 └── api/             FastAPI + workers

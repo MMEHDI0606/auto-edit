@@ -307,3 +307,177 @@ overlooked:
   prompt-injection warning the spec mentions but doesn't operationalize.
 - The evaluation metric set and Phase 1 gates (§12) — kept, see §10 above
   for the one addition (fast unit-test tier alongside it).
+
+---
+
+## 15. L7 — Conversational interface: where it sits, and the provider abstraction
+
+New requirement, not in the original spec: a first-class, built-in chat UI
+— talk to RECUT in natural language ("make this punchier," "swap the clip
+in slot 3," "recreate this edit style but slower") — backed by an LLM the
+user configures directly, in addition to (not instead of) §9's MCP server.
+`RECUT_SPEC.md` §9A now specifies the product surface; this section
+records the two judgment calls behind it and why the more "obviously
+elegant" alternative for each was rejected.
+
+### 15.1 Decision: L7 is a sibling of L6, not built on top of it
+
+The tempting design is: "the chatbot needs to call list_slots/match_assets/
+bind/render/describe_template — L6 already exposes exactly those as MCP
+tools — so make the chatbot an MCP client of your own L6 server." This
+looks like reuse but is actually reuse of the wrong layer. MCP's transport
+(stdio subprocess, or Streamable HTTP) exists to let a process that doesn't
+already trust yours — an external agent, a hosted subscription client —
+call your tools over a stable wire protocol with its own auth/session
+boundary. L7's chat backend and L6's tool implementations run in the same
+deployment, the same trust boundary, often the same process. Routing
+through MCP's protocol to reach your own in-process functions buys zero
+additional isolation and costs real things: subprocess lifecycle
+management (or a loopback HTTP hop) per chat session, a second
+serialization boundary where tool-call semantics can silently drift from
+what `mcp/tools.py` actually does, and duplicated error-handling paths.
+
+**What's actually worth reusing is the *operations* and their
+*descriptions*, not the wire protocol.** `mcp/tools.py`'s functions are
+already thin, transport-agnostic Python callables (its own docstring says
+so: "MCP tools must not contain business logic, only request/response
+shaping"). L7 imports them directly (`from mcp.tools import list_slots,
+bind, render, ...`) and builds its tool-calling-model-facing tool specs by
+wrapping each function with a JSON Schema for its parameters and reusing
+its docstring, verbatim, as the tool description (`chat/tool_registry.py`,
+`INSTRUCTIONS.md` Unit 4.5.1). This means a tool description written once
+for the MCP surface (already held to "tool descriptions are prompt
+engineering" per spec §9.4) automatically also documents the tool for
+whichever chat LLM the user has configured — no parallel prompt-engineering
+effort, no drift between what an external Cursor/Claude agent sees and
+what the built-in chat sees.
+
+Net effect on `RECUT_SPEC.md` §1's diagram: L7 is drawn beside L6, both
+sitting on L0-L5's operations layer, not stacked on top of L6.
+
+**The reuse is one-directional and stops at the tool surface — it does not
+mean L7 gets exposed back through MCP.** Confirmed explicitly per user
+clarification: the conversational interface itself (talking to RECUT in
+natural language) is reachable **only** through L7's own dedicated API
+(`INSTRUCTIONS.md` Unit 4.5.8's `POST /chat/{session_id}/message`). There
+is no MCP tool or resource that wraps the chat loop — no
+`recut.chat(...)`, no way for an external MCP client to drive a
+conversation through RECUT's own L7. Any external agent that wants a
+conversational front end supplies its own LLM and talks through §9's
+existing MCP tool surface, exactly as before this feature existed. And the
+inverse holds too: nothing else in RECUT's tool surface —
+`analyze_video`, `get_template`, `match_assets`, `bind`, `render`,
+`adjust_template` — grows a second, non-MCP API surface just because L7
+needed one for itself. The chat endpoint is additive and scoped to L7
+only; it is not a precedent for an "API-and-MCP-both" pattern anywhere
+else in the system.
+
+### 15.2 Decision: a new `chat/providers/` interface, not an extension of `semantics/providers/`
+
+The obvious question, since `semantics/providers/` already solved "abstract
+over multiple LLM vendors": should L7 reuse `SemanticProvider`? No — and
+the reason isn't "not invented here," it's that the two provider sets sit
+on genuinely different axes:
+
+- **What varies.** `SemanticProvider`'s volatility is "which vision model
+  is best/cheapest at evidence-gated shot labeling" — a decision RECUT
+  makes internally and can revisit centrally. `ChatProvider`'s volatility
+  is "which LLM subscription or self-hosted endpoint a given *user*
+  already has" — a decision made per-deployment, by the user, and RECUT
+  has no say in it. These are not the same knob and there's no reason to
+  expect they'd ever be swapped in unison.
+- **Call shape.** `SemanticProvider` is single-shot: one evidence pack in,
+  one schema-validated Pydantic object out (`triage()` →`StyleSummary`,
+  `deep_pass()` → `SemanticShotAnnotation`), no conversation state, no
+  tool-calling loop. A chat provider's natural call is a message-history-in,
+  tool-call-or-text-out loop, repeated until the model is done, with
+  optional streaming for UI responsiveness. Bolting a `chat(messages,
+  tools)` method onto `SemanticProvider` alongside `triage`/`deep_pass`
+  would produce an interface where two of the three methods share nothing
+  in shape with the third — the opposite of what an interface is for.
+- **Native SDK shape.** L2's providers (Claude/Gemini today) are asked for
+  one structured object matching a fixed schema. Chat providers are asked
+  to run a tool-calling turn against an evolving, dozen-plus-tool surface
+  that isn't fixed at build time the way `TriagePromptInputs`/
+  `DeepPassPromptInputs` are. Forcing both through one interface would
+  distort whichever one didn't get to keep its natural shape.
+
+**What genuinely IS shared, and reused on purpose:** the *build discipline*,
+not the code. `chat/providers/base.py` is a fully-specified ABC up front,
+same as `semantics/providers/base.py` — but unlike L2 (where the spec's
+"3 providers as interfaces, 1 implemented" scoping was right because only
+one model actually needed to work for the eval loop to proceed), the user
+explicitly wants "effectively all of them" working for chat, so the
+interface-now-implement-later discipline here applies at the *method*
+level (streaming is deferred, `stream()` raises `NotImplementedError` by
+default) rather than at the *provider* level (all 5 requested providers get
+built, see `BUILD_ORDER.md` Phase 4.5) — see `INSTRUCTIONS.md` for the
+exact split.
+
+### 15.3 Provider abstraction: shim vs. real adapter
+
+OpenAI, NVIDIA NIM, OpenRouter, and self-hosted vLLM all speak (or can be
+made to speak) the same OpenAI-compatible `chat.completions.create(...,
+tools=[...])` shape — one `OpenAICompatibleProvider` base class
+parameterized by `base_url`/`api_key`/`model_id`/extra-headers covers all
+four; the concrete classes differ only in config (`RECUT_SPEC.md` §9A.4
+has the exact deltas). This is a genuine one-shim-covers-many case for
+NIM/OpenRouter in particular, since both are *designed* to be OpenAI-SDK
+drop-ins. vLLM shares the wire shape but not the operational guarantee —
+whether tool-calling actually works depends on the served model's chat
+template and vLLM being launched with a matching `--tool-call-parser`; the
+code path is shared, the reliability is not, and `INSTRUCTIONS.md` Unit
+4.5.4 calls this out as a real per-deployment verification step, not a
+formality.
+
+Gemini gets a real, hand-written adapter, not a config variant of the same
+base class, because its function-calling shape differs structurally, not
+just cosmetically: `system_instruction` is a separate config field (not a
+"system" role message), roles are `user`/`model` (not `user`/`assistant`),
+a tool result goes back as a `function_response` part inside a `user`-role
+`Content` (not a `tool`-role message the way OpenAI wants it), function-call
+arguments arrive as an already-parsed dict rather than a JSON string
+needing `json.loads`, and a single turn can carry multiple `function_call`
+parts with no provider-issued call id (the adapter has to synthesize one).
+Trying to route Gemini through the OpenAI-compatible base class would mean
+either lying to it about message roles or silently dropping the
+multi-call-per-turn case — a real adapter is the only honest option.
+
+### 15.4 The evidence-gating principle generalizes to L7
+
+Spec's central rule — "the LLM never measures, it only labels/explains what
+deterministic tools found" — has an L7 analogue, made explicit by the
+`adjust_template` tool added in `RECUT_SPEC.md` §9.3/§9A.3 (added while
+designing this feature: without a template-mutation tool, "make this
+punchier" and "recreate this edit style but slower" have no lever to pull
+at all — every other example request in the ask maps onto an existing tool,
+this one didn't). `adjust_template`'s `changes` argument is a small, fixed,
+schema-validated vocabulary (`global_duration_scale: float`,
+`energy_bias: "punchier"|"calmer"`, bounded `slot_overrides`) — the chat
+model picks a knob position from that constrained schema; it never emits a
+raw `duration_s` or effect parameter for an individual shot "from vibes."
+RECUT's own deterministic code (reusing `compiler/beat_snap.py`, unchanged)
+computes the actual new numbers from the chosen knob. This keeps L7 inside
+the same trust boundary the rest of the system already enforces: the model
+chooses intent, deterministic code computes the edit.
+
+### 15.5 Session storage and untrusted text
+
+Chat sessions are persisted in Redis, reusing the job-store infrastructure
+already built for §9.4's async job pattern (`api/workers.py`), keyed by
+`session_id`, TTL'd — not a new storage dependency. Revisit Postgres-backed
+persistence only if cross-device session continuity becomes a real
+requirement (same "resolve now with a pinned default, revisit if a concrete
+need shows up" posture as §13's open questions above).
+
+The one risk this section calls out explicitly: any OCR/transcript/caption
+string a tool result surfaces into the conversation (e.g. `describe_
+template`'s output, or a `get_trace` call the chat model makes on its own
+initiative) **must** be passed through the existing `mcp.tools.
+wrap_untrusted_text()` — reused, not reimplemented — before it re-enters
+the model's context. This is arguably a bigger deal here than in the
+external-agent MCP case: an MCP client like Cursor is a tool a developer is
+already treating skeptically; L7's chat model is a first-party surface an
+end user is casually chatting with in real time, exactly the context where
+a prompt-injection payload embedded in a scraped video's on-screen text is
+most likely to be trusted at face value.
