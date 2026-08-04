@@ -41,6 +41,19 @@ ocr = [
 ]
 local-vlm = []  # fill in when semantics/providers/local_provider.py is implemented
 audio-sep = ["demucs==4.1.0"]  # pulled in only where signals/audio.py::separate_speech_music is used - heavy (torch)
+golden-import = [
+    "opentimelineio==0.17.0",  # VERIFY against latest PyPI release at Unit 0.4 implementation time -
+                               # this pin predates that unit's build. Core adapters used: otio_json
+                               # (native .otio) and fcp_xml (legacy FCP7/xmeml XML - this is what
+                               # Premiere Pro's "Export > Final Cut Pro XML" actually produces).
+    "opentimelineio-contrib==0.17.0",  # separate package, NOT bundled in core opentimelineio - needed
+                                       # for fcpx_xml (modern Apple FCPXML, .fcpxml) and the optional
+                                       # AAF adapter. Less consistently maintained than core; treat
+                                       # .fcpxml import as best-effort, not equal-reliability to fcp_xml.
+]
+# golden-import is eval/dev-tooling ONLY (eval/golden/import_project_file.py, Unit 0.4) - it must
+# never be imported by signals/, compiler/, or anything on the production analysis/render path.
+# See DESIGN_NOTES.md sec 16 and INSTRUCTIONS.md Unit 0.4.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -41,6 +41,11 @@ Tasks:
 - [ ] Stand up `eval/golden/` directory convention (empty is fine) and
   write down in `eval/golden/.gitkeep` — already done — the annotation
   format for the first golden video, even before any video is annotated.
+- [ ] Build `eval/golden/import_project_file.py` (Unit 0.4) — an OTIO-based
+  importer that turns a donated editor project file (FCPXML/Premiere XML/
+  `.otio`) plus its source video into a draft `annotations.json`, so the
+  golden-set backlog (see `eval/golden/NEEDS_INPUT.md`) can grow from
+  project-file donations, not only from-scratch frame scrubbing.
 
 **Done when:** schema models pass round-trip tests, dependencies are
 pinned, and a fresh clone can `pip install` + `pytest` with no changes.

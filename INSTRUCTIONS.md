@@ -82,6 +82,118 @@ obtain the file — do not commit the video itself) and a hand-verified
 **Dependencies.** None (can run in parallel with 0.1/0.2, but must be done
 before Unit 1.19's gate check).
 
+Note: if a donor supplies an editor project file (`.fcpxml`/Premiere XML/
+`.otio`) alongside their video, use Unit 0.4's importer to draft this
+video's `annotations.json` instead of frame-by-frame scrubbing — Unit 0.4
+still ends with the same human "second look-through" done-criterion above,
+it just removes the scrubbing labor to get there.
+
+### Unit 0.4 — Project-file ground-truth importer (OTIO-based)
+**Scope.** Implement `eval/golden/import_project_file.py`, a golden-set
+*acquisition* tool, not a pipeline component — it never runs in
+production, only ahead of `eval/run.py` / as an alternative on-ramp into
+Unit 0.3's annotation format. Given an editor project file (`.fcpxml` from
+Final Cut Pro X, the `.xml` Final Cut Pro 7 interchange format Premiere
+Pro exports via File > Export > Final Cut Pro XML, or native `.otio`)
+plus its matching source video, produce a draft
+`eval/golden/<video_id>/annotations.json` with hand-scrubbing-free cut
+timestamps and cut/transition types, and — best-effort only, not a done
+criterion — text/graphic-layer timing if the project has a dedicated
+overlay track. Explicitly out of scope: CapCut project files (proprietary,
+undocumented, no OTIO adapter exists — do not attempt) and After Effects
+`.aep` (proprietary binary container; text timing is frequently
+expression-driven rather than keyframed, so even a successful parse often
+can't recover "exact" text timing — do not attempt). See
+`DESIGN_NOTES.md` §16 for the full rationale. This unit does NOT replace
+video acquisition — the donor must still supply the actual video
+(`source.ref`); a project file only replaces the *scrubbing* labor, not
+the *footage* requirement.
+**Implementation.**
+- Dependency: add `opentimelineio` (and `opentimelineio-contrib` for the
+  modern-FCPXML and AAF adapters, which are NOT in OTIO core) to a new
+  `golden-import` extra in `pyproject.toml` — eval-tooling only, same
+  posture as the `ocr`/`audio-sep` extras, not a production dependency.
+  Pin exact versions per Unit 0.1's policy; confirm the latest released
+  version against PyPI at implementation time.
+- Format detection: sniff the file's root XML element, don't trust the
+  extension (editors name these files inconsistently). `<fcpxml ...>` =
+  Apple's modern Final Cut Pro X format → OTIO's `fcpx_xml` adapter
+  (contrib, less consistently maintained against Apple's newest DTD
+  versions — treat as best-effort). `<xmeml ...>` = the legacy Final Cut
+  Pro 7 XML interchange (this is what Premiere Pro actually exports as
+  "Final Cut Pro XML") → OTIO core's `fcp_xml` adapter (mature, in-tree,
+  the most reliable of the three paths). `.otio` = native → OTIO core's
+  `otio_json` adapter, direct and lossless. Pass `adapter_name` explicitly
+  to `otio.adapters.read_from_file()` based on this sniff — do not rely on
+  OTIO's extension-based auto-dispatch, since `.xml` alone is ambiguous.
+  AAF (`.aaf`, an alternative Premiere export) is supported best-effort
+  only via contrib's AAF adapter (needs `pyaaf2`); not required to work
+  for this unit's done criteria.
+- Track selection: real project files have multiple video tracks (a base
+  edit track plus graphics/title tracks above it). Pick the lowest-indexed
+  video track with near-continuous coverage of the timeline duration as
+  the **cut/shot track**; treat any higher tracks as **candidate overlay
+  tracks** for text-layer extraction only.
+- Flatten: walk the cut track's children in order (`track.each_child()`),
+  skipping `Gap` items (log a warning instead of bridging silently —
+  RECUT's `Shot` list assumes continuous coverage, and a real gap needs a
+  human decision) and reading `Transition` items positioned between two
+  `Clip`s. Compute each `Clip`'s timeline-space `t_in`/`t_out` from
+  `clip.transformed_time_range(track)` converted to seconds — NOT
+  `source_range`, which is the *source media's* in/out, not the timeline
+  position.
+- Transition-type mapping. OTIO's `Transition.transition_type` is generic
+  (SMPTE-style constants plus adapter-specific strings), not RECUT's
+  5-value enum — map explicitly, falling back conservatively:
+  - No `Transition` object between clips (hard edit) → `cut`,
+    confidence `exact`.
+  - `transition_type == "SMPTE_Dissolve"` (or the adapter-preserved raw
+    name contains "dissolve"/"fade") → `dissolve`, confidence `exact`.
+  - Raw effect/transition name (check `transition.metadata` first — the
+    `fcp_xml`/`fcpx_xml` adapters often keep the source element's
+    `name`/`effect` string under a namespaced metadata key; only fall back
+    to a second raw-XML pass over the same file if metadata is empty)
+    contains "whip" → `whip_pan`; contains "flash"/"flare"/"strobe" →
+    `flash`; contains "zoom"/"cross zoom"/"push" → `zoom` — all at
+    confidence `heuristic`.
+  - Any other named `Transition` (wipe, page peel, unrecognized vendor
+    plugin name) → `cut`, confidence `fallback_cut` — emit it, don't drop
+    it, but flag it plainly.
+  Every emitted cut entry carries two fields beyond Unit 0.3's
+  `{t, type}`: `source: "project_file"` and
+  `type_confidence: "exact"|"heuristic"|"fallback_cut"`, so
+  `eval/metrics.py` and human reviewers can tell a project-file-derived
+  label from a hand-scrubbed one, and treat `fallback_cut` entries as
+  needing a manual spot-check before trusting them for
+  `transition_type_accuracy()`.
+- Text-layer extraction (best-effort, not a done-criterion): only attempt
+  it where an overlay-track clip's `name` looks like literal on-screen
+  text (common for FCPX title clips and Premiere graphic clips named
+  after their content); emit as `text_layers` entries with
+  `source: "project_file_heuristic"` — box/font/style are NOT recoverable
+  this way and stay null.
+- Markers: if present, surface as a separate `candidate_beat_grid_s` list
+  — never write directly into `beat_grid_s` (a marker could mean chapter
+  mark, note-to-self, anything); only a human confirming against the
+  audio should promote a candidate into the real beat grid.
+- Do not commit the project file itself to git — same posture as the
+  video (see `eval/golden/.gitkeep`): project files routinely embed
+  absolute local file paths and the donor's OS username (a privacy leak,
+  not a copyright one, but still don't ship it). Store
+  `eval/golden/<video_id>/project_file.ref` (a note on how to re-obtain
+  it) and commit only the derived, sanitized `annotations.json`.
+**Done criteria.** Run against at least 2 real project files (any mix of
+`.fcpxml`/legacy-XML/`.otio`) donated alongside their source videos:
+produces a draft `annotations.json` whose `cuts[]` timestamps match the
+video to within 1 frame on manual spot-check, and every transition entry
+emitted with `type_confidence: exact` is actually correct (`heuristic`/
+`fallback_cut` entries are expected to need human correction — that's the
+point of the confidence flag, not a failure of this unit).
+**Dependencies.** Unit 0.3 (the annotation format this writes into).
+Independent of Phase 1's analysis code — can run against externally
+donated files as soon as any donor offers a project file, in parallel
+with the LinkedIn ask going out.
+
 ---
 
 ## PHASE 1 — Analysis (L0 + L1), CLI only, no LLM, no renderer
@@ -718,7 +830,14 @@ near-instantly (cache hit, per Unit 1.2).
 and finish annotating the golden set up to at least 20 videos (spec §11's
 Phase 1 gate size) across the 5 genres named in spec §12 (talking head,
 product, dance/trend, text-heavy tutorial, cinematic b-roll — aim for at
-least 3-4 of each).
+least 3-4 of each). Videos annotated via Unit 0.4's project-file importer
+count toward this 20, but cap how much the gate leans on them: that path
+gives cut/transition ground truth for free but only best-effort (often
+absent) text-layer ground truth, so keep at least half the 20 as fully
+hand-annotated (either from scratch or a project-file draft a human has
+completed the `text_layers` section of by watching the video) — otherwise
+the `text_layer_timing_iou` gate is being measured on an artificially thin
+sample and a regression there could hide until much later.
 **Implementation.**
 - `cut_boundary_f1()`: for each predicted cut, it's a true positive if a
   ground-truth cut exists within `tolerance_frames` (default 2) of it and

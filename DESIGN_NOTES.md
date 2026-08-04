@@ -481,3 +481,179 @@ already treating skeptically; L7's chat model is a first-party surface an
 end user is casually chatting with in real time, exactly the context where
 a prompt-injection payload embedded in a scraped video's on-screen text is
 most likely to be trusted at face value.
+
+---
+
+## 16. Golden-set acquisition: project-file import as a second path, alongside hand-scrubbing
+
+New idea, not in the original spec: Unit 0.3 / Unit 1.19's 20-30-video
+golden set has been blocked on slow, purely-manual frame-scrubbing (see
+`eval/golden/NEEDS_INPUT.md`). The fix added here is `eval/golden/
+import_project_file.py` (`INSTRUCTIONS.md` Unit 0.4) — when a donor still
+has the **editor project file** (not just the rendered MP4) for a video,
+parse cut timestamps and transition types directly out of it instead of
+asking a human to re-derive them by eye. This section records the
+verification behind that decision and where it draws the line.
+
+### 16.1 Verifying the OTIO claim
+
+The proposal on the table was "OpenTimelineIO's Python adapter model
+covers FCPXML, Premiere XML, and native `.otio` in one shot." Mostly right,
+with three corrections worth being explicit about before anyone builds
+against it:
+
+- **It's not literally one adapter.** OTIO's uniform entry point
+  (`otio.adapters.read_from_file()`) sits on top of *several* format-
+  specific adapters of uneven maturity, not one FCPXML-and-Premiere-aware
+  parser. Core `opentimelineio` ships `otio_json` (native, trivial,
+  lossless) and `fcp_xml` — the **legacy Final Cut Pro 7 XML interchange
+  format** (root element `<xmeml>`). That `fcp_xml` adapter, not a
+  Premiere-specific one, is what actually reads a Premiere Pro export,
+  because Premiere doesn't speak OTIO or a modern Apple format at all —
+  its interchange path *is* "File > Export > Final Cut Pro XML," producing
+  exactly the `<xmeml>` document `fcp_xml` was built for. This adapter is
+  the most mature and reliable of the three and has been in-tree the
+  longest.
+- **Modern Apple FCPXML is a different adapter, in a different package,
+  at a different maturity level.** The `.fcpxml` extension (root element
+  `<fcpxml>`) is Final Cut Pro X's own native XML, unrelated to the legacy
+  `<xmeml>` format despite the similar name. Reading it requires the
+  `fcpx_xml` adapter, which lives in `opentimelineio-contrib` (a separate
+  pip package from core `opentimelineio`), maintained by the community
+  rather than the OTIO core team, and has historically lagged Apple's
+  FCPXML DTD revisions (compound clips, multicam, roles, and title/
+  generator elements are the parts most likely to be incompletely
+  represented). Treat `.fcpxml` import as best-effort, not equivalent in
+  reliability to the `fcp_xml`/Premiere path.
+- **`.prproj` itself is out of reach.** Premiere's native project file is
+  a proprietary, undocumented, gzipped-XML-ish binary container with no
+  OTIO adapter and no public schema. "Premiere support" in this plan means
+  "the user exports Final Cut Pro XML (or AAF) from Premiere" — a normal,
+  one-menu workflow editors already know — not "we parse `.prproj`
+  directly." AAF is a second, best-effort-only Premiere export path via
+  contrib's AAF adapter (needs `pyaaf2`, which has its own cross-platform
+  build friction); it is explicitly not required to work for Unit 0.4's
+  done criteria.
+
+**What OTIO's timeline model actually gives you**, and how it maps onto
+RECUT's shapes:
+
+- `Timeline` → `Stack` of `Track`s → each `Track` is an ordered sequence of
+  `Clip` / `Gap` / `Transition` / nested `Stack` items. `Clip.source_range`
+  is the *source media's* in/out — for RECUT's `Shot.t_in`/`t_out` (which
+  are timeline-space) you need `clip.transformed_time_range(track)`
+  instead. This is a real, easy-to-get-wrong gotcha, not a detail.
+- `Transition` objects sit *between* two clips in the track sequence
+  (`in_offset`/`out_offset` durations either side of the cut point) and
+  carry a `transition_type` string. OTIO only standardizes one constant
+  (`SMPTE_Dissolve`); everything else is an adapter- or vendor-supplied
+  string with no fixed vocabulary — there is no first-class "whip pan,"
+  "flash," or "zoom" transition in OTIO's model. Those only surface, if at
+  all, as a human-readable name string an adapter happened to preserve in
+  `metadata` (see §16.2).
+- `Marker`s exist on tracks/clips/timeline and are a nice-to-have signal
+  for beat-grid ground truth *if* the editor happened to drop markers on
+  beat — never assume they mean that; surface as `candidate_beat_grid_s`
+  for human confirmation only.
+- Real projects nest clips inside compound clips / multicam stacks — OTIO
+  represents this as nested `Stack`/`Track` structures, which means a
+  flatten pass over the *cut track specifically* (not the whole bin
+  structure) is required to get the single ordered shot list RECUT's
+  `EditTrace` wants. **This is a real translation layer, not a
+  pass-through** — `import_project_file.py` is not "call OTIO, dump the
+  result," it's OTIO for the time-math and structure-walking, plus RECUT-
+  specific flattening, track-role heuristics, and enum mapping on top.
+
+Net verdict: keep the OTIO-centric approach — it is still far less work
+than three bespoke parsers and gives frame-accurate `RationalTime`/
+timecode handling for free — but budget for the adapter-maturity gap
+between the Premiere/legacy-XML path (solid) and the native-FCPXML path
+(best-effort), and do not understate that a translation layer is needed.
+
+### 16.2 Enum mapping: what maps cleanly, what falls back
+
+RECUT's `TransitionType` (`schemas/models.py`) is a closed, 5-value enum:
+`cut`, `dissolve`, `whip_pan`, `flash`, `zoom`. OTIO's transition model is
+open-vocabulary and mostly untyped beyond dissolve. The importer maps:
+
+| OTIO signal | `TransitionType` | confidence |
+|---|---|---|
+| No `Transition` between clips | `cut` | `exact` |
+| `transition_type == "SMPTE_Dissolve"` / name contains "dissolve"/"fade" | `dissolve` | `exact` |
+| Preserved raw name contains "whip" | `whip_pan` | `heuristic` |
+| ...contains "flash"/"flare"/"strobe" | `flash` | `heuristic` |
+| ...contains "zoom"/"cross zoom"/"push" | `zoom` | `heuristic` |
+| Anything else (wipe, page peel, unrecognized plugin) | `cut` | `fallback_cut` |
+
+The `heuristic`/`fallback_cut` confidence tiers are the honest admission
+that OTIO cannot reliably distinguish a whip-pan transition from a wipe
+from a vendor plugin effect from its own schema — that distinction, when
+recoverable at all, comes from a human-authored name string an adapter
+happened to preserve (FCPX and Premiere both tend to keep a `name`
+attribute on the transition/effect element), not from anything OTIO
+standardizes. `eval/metrics.py`'s `transition_type_accuracy()` must never
+be fed a `fallback_cut` entry as if it were hand-verified ground truth —
+every cut/transition record this importer emits carries `source:
+"project_file"` and `type_confidence` fields precisely so that distinction
+survives into the metric.
+
+### 16.3 Where this lives: confirmed as an `eval/` concern
+
+This is squarely golden-set *acquisition* tooling, not a new pipeline
+layer. It never touches `signals/`, `compiler/`, or the runtime L0-L5
+pipeline — it runs offline, once per donated project file, ahead of
+`eval/run.py`, and its only output is a draft `annotations.json` a human
+still reviews before it counts (Unit 0.3's "second look-through" done-
+criterion is unchanged, just faster to reach). Filed as `eval/golden/
+import_project_file.py` and `INSTRUCTIONS.md` Unit 0.4, sequenced right
+after Unit 0.3 in Phase 0 (before Phase 1 analysis code exists at all,
+since this unblocks acquisition, not analysis).
+
+One consequence worth naming: `opentimelineio` (and `opentimelineio-
+contrib`) become a pinned dependency earlier than originally planned.
+`RECUT_SPEC.md` §5.3 already commits to OTIO as a Template *export*
+format, but that work was deferred to Phase 3+ (`compiler/otio_export.py`,
+per `INSTRUCTIONS.md` Unit 2.7's note). Unit 0.4 pulls the OTIO *library*
+forward into a Phase 0 `golden-import` extra — but only as eval-tooling
+(dev-time, offline, never imported by `signals/`, `compiler/`, or
+anything that ships in the production path), so this does not pull
+Phase 3's export *feature* forward, only the *dependency*. One nice
+side effect: the same library ends up handling both directions (import
+for ground truth here, export for interchange in Phase 3+), so there's
+never a second, independently-drifting OTIO integration in the codebase.
+
+### 16.4 CapCut and After Effects: explicitly out of scope for now
+
+- **CapCut** project files are a proprietary, undocumented JSON-ish format
+  with no OTIO adapter and no public schema, and CapCut's own edits
+  (auto-captions, built-in effect presets, "auto-beat" cutting) are
+  exactly the kind of externally-applied structure this project doesn't
+  want to reverse-engineer as a side quest. Do not attempt to parse
+  CapCut project files for the golden set — if a donor only has a CapCut
+  project, treat them as a raw-video-plus-hand-annotation donor instead
+  (§16.5), the original acquisition path.
+- **After Effects** `.aep` files are also proprietary/binary, and even a
+  successful parse runs into a deeper problem: AE text-layer timing is
+  frequently driven by **expressions** (arbitrary JavaScript-like code
+  evaluated per-frame) rather than explicit keyframes, so "exact" text
+  timing is often not directly readable from the project file even in
+  principle — you'd need to evaluate the expression, which is out of
+  scope for a ground-truth importer. Out of scope for now; revisit only
+  if AE-sourced donations turn out to be a large fraction of the pipeline
+  (unlikely for short-form Reels/TikTok/Shorts, which skew CapCut/
+  Premiere/FCPX, not AE).
+
+### 16.5 Net effect: two acquisition paths, not a replacement
+
+`eval/golden/NEEDS_INPUT.md` now asks for either (or both): (a) a raw
+video the donor has rights to, which still gets hand-scrubbed per Unit
+0.3's original method, or (b) a raw video *plus* its FCPXML/Premiere-
+XML/`.otio` project file, which gets drafted by Unit 0.4's importer and
+then human-reviewed instead of scrubbed from zero. (b) is strictly less
+labor when available, but it is additive, not a replacement — it does not
+reduce the video-acquisition ask itself (a project file with no matching
+video is not useful; the media hash/reference is what `eval/run.py`
+actually evaluates against), and it does not fully satisfy Unit 1.19's
+text-layer-IoU gate on its own (§ note in `INSTRUCTIONS.md` Unit 1.19)
+since text/graphic-layer ground truth from a project file is best-effort
+at most.

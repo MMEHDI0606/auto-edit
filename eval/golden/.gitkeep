@@ -5,9 +5,60 @@ into git - store references/hashes here and pull media from ingest/cache
 at eval time (see DESIGN_NOTES.md "Golden set storage").
 
 Layout convention (create when Phase 1 starts):
-  eval/golden/<video_id>/source.ref        (URL or hash, not the file)
-  eval/golden/<video_id>/annotations.json  (hand-labeled ground truth,
-                                             matching a subset of the
-                                             EditTrace shape: cut times,
-                                             transition types, text layer
-                                             timing/strings)
+  eval/golden/<video_id>/source.ref          (URL or hash, not the file)
+  eval/golden/<video_id>/project_file.ref    (optional - if this video was
+                                               annotated via an editor
+                                               project file donation
+                                               instead of/alongside hand
+                                               scrubbing, a note on how to
+                                               re-obtain the .fcpxml/
+                                               Premiere-XML/.otio file.
+                                               Never commit the project
+                                               file itself - same posture
+                                               as the video, see below -
+                                               it routinely embeds the
+                                               donor's local file paths
+                                               and OS username)
+  eval/golden/<video_id>/annotations.json    (ground truth, matching a
+                                               subset of the EditTrace
+                                               shape: cut times, transition
+                                               types, text layer
+                                               timing/strings)
+
+annotations.json can come from two paths (see DESIGN_NOTES.md sec 16,
+INSTRUCTIONS.md Unit 0.3/Unit 0.4):
+  1. Hand-scrubbing the video frame-by-frame (Unit 0.3's original method -
+     still required when no project file exists).
+  2. eval/golden/import_project_file.py (Unit 0.4) parsing an editor
+     project file (FCPXML / Premiere's "Final Cut Pro XML" export / .otio)
+     via OpenTimelineIO, when a donor has one - gives exact cut timestamps
+     and transition boundaries in minutes instead of hours; still needs a
+     human "second look-through" against the video before it counts (Unit
+     0.3's done-criterion, unchanged). CapCut and After Effects project
+     files are explicitly out of scope for path 2 - see DESIGN_NOTES.md
+     sec 16.4 - donors with only those should go through path 1 instead.
+
+Path 2 adds two fields to each entry in `cuts[]` beyond the original
+`{t, type}` shape:
+  - source: "project_file" | "cv_detected" | "human_annotated"
+  - type_confidence: "exact" | "heuristic" | "fallback_cut"
+    (only meaningful when source == "project_file" - see Unit 0.4;
+    "fallback_cut" means the importer could not identify the real
+    transition type and defaulted to "cut" - treat as needing a human
+    check, not as verified ground truth, before trusting it for
+    eval/metrics.py's transition_type_accuracy()).
+Entries from path 1 (pure hand annotation) omit these fields or set
+source: "human_annotated" - eval code must treat their absence as
+"human_annotated" for backward compatibility with videos annotated before
+Unit 0.4 existed.
+
+text_layers[] entries gain an optional `source` field the same way
+("project_file_heuristic" when derived from an overlay-track clip name
+via Unit 0.4 - box/font/style stay null in that case and the string/
+timing should still be spot-checked, it is not equivalent to OCR'd +
+hand-verified ground truth).
+
+A project-file-derived annotation may also include a top-level
+`candidate_beat_grid_s` (from OTIO markers, if any were present on the
+timeline) - this is NOT the same field as `beat_grid_s` and must not be
+auto-promoted into it; a human confirms against the actual audio first.
