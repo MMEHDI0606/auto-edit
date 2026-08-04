@@ -51,6 +51,11 @@
           "title": "Beat Grid S",
           "type": "array"
         },
+        "median_cut_offset_frames": {
+          "default": 0,
+          "title": "Median Cut Offset Frames",
+          "type": "integer"
+        },
         "embed_permitted": {
           "const": false,
           "default": false,
@@ -565,6 +570,10 @@
       "title": "Source Trace Hash",
       "type": "string"
     },
+    "source_fps": {
+      "title": "Source Fps",
+      "type": "integer"
+    },
     "slots": {
       "items": {
         "$ref": "#/$defs/Slot"
@@ -593,6 +602,7 @@
   },
   "required": [
     "source_trace_hash",
+    "source_fps",
     "slots",
     "audio_ref"
   ],

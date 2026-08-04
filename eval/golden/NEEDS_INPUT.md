@@ -113,3 +113,24 @@ human/resource-gated numeric verification waits. Unblock by supplying an
 API key (env var `ANTHROPIC_API_KEY`) plus 3-5 real videos, or explicit
 go-ahead to run this against whatever real footage eventually arrives via
 the Path A/B ask above.
+
+## Phase 3 Unit 3.6 gate - partially covered, full variety still blocked
+
+`matcher/probe.py::extract_asset_features()` is implemented and tested
+against two REAL fixtures (not fabricated): `tests/fixtures/
+synthetic_face_clip.mp4` (a real public-domain NASA photo,
+`skimage.data.astronaut()`, muxed with the project's existing real
+Windows-SAPI TTS speech fixture - see `tests/fixtures/make_face_clip.py`
+for why a drawn "face" wouldn't exercise the real Haar-cascade path at
+all) and the existing `synthetic_clip.mp4` (no face, no real speech). This
+covers the has_face / has_speech axes with one real positive and one real
+negative example each.
+
+What's still blocked: the unit's own done criterion asks for "5-10 varied
+local test clips (different orientations, with/without faces, with/without
+speech)" - that breadth (multiple real people, real orientations, real
+b-roll vs talking-head vs product-shot variety) needs real donated footage,
+same blocker as everything else in this file. Not urgent to unblock
+specifically for this unit - the 2 real fixtures already exercise every
+code path; more variety would sharpen confidence in the coarse shot-type/
+motion-score heuristics, not change the implementation.

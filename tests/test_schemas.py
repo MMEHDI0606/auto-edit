@@ -47,5 +47,5 @@ def test_audio_ref_cannot_permit_embedding() -> None:
 
 
 def test_minimal_template_requires_no_embedded_audio() -> None:
-    template = Template(source_trace_hash="deadbeef", slots=[], audio_ref=AudioRef())
+    template = Template(source_trace_hash="deadbeef", source_fps=30, slots=[], audio_ref=AudioRef())
     assert template.audio_ref.embed_permitted is False

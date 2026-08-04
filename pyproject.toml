@@ -25,6 +25,9 @@ dependencies = [
     "opencv-python==4.11.0.86",  # NOT 5.0.0.93 - too new/unproven for scenedetect/ORB compat; revisit once 5.x is verified against scenedetect
     "scenedetect==0.7.1",
     "librosa==0.11.0",
+    "scipy==1.17.1",  # matcher/assign.py (Unit 3.8) imports scipy.optimize.linear_sum_assignment directly -
+                      # was only a transitive librosa dependency before; pinned explicitly since it's now a
+                      # direct import, not just incidentally available.
     "faster-whisper==1.2.1",
     "yt-dlp==2026.7.4",
     "numpy==1.26.4",  # pinned <2.0: opencv-python 4.11 wheels + scenedetect are built/tested against numpy 1.x
@@ -47,6 +50,11 @@ semantics = [
 ]
 local-vlm = []  # fill in when semantics/providers/local_provider.py is implemented
 audio-sep = ["demucs==4.1.0"]  # pulled in only where signals/audio.py::separate_speech_music is used - heavy (torch)
+matcher = [
+    "open_clip_torch==3.3.0",  # Unit 3.6 - matcher/probe.py CLIP embedding (ViT-B-32/openai weights,
+                               # downloaded on first use). torch itself already comes in via the
+                               # audio-sep (demucs) extra; not re-pinned here to avoid two conflicting pins.
+]
 golden-import = [
     "opentimelineio==0.18.1",  # core ships ONLY otio_json/otioz/otiod - fcp_xml/fcpx_xml/AAF are
                                # separate plugin packages below, NOT an "opentimelineio-contrib"

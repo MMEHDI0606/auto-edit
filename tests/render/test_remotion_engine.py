@@ -77,6 +77,7 @@ def test_remotion_render_produces_correct_duration_mp4(tmp_path) -> None:
 
     template = Template(
         source_trace_hash="deadbeef",
+        source_fps=30,
         slots=[
             _slot("slot_01", 1, 1.5, primitive=MotionPrimitive.punch_in),
             _slot("slot_02", 2, 1.0, primitive=MotionPrimitive.static),
@@ -99,8 +100,12 @@ def test_remotion_render_produces_correct_duration_mp4(tmp_path) -> None:
     bindings = BindingSet(
         binding_id="b1",
         bindings=[
-            AssetBinding(slot_id="slot_01", asset_id=str(clip_a), in_point_s=0.0, confidence=0.9, rationale="test"),
-            AssetBinding(slot_id="slot_02", asset_id=str(clip_b), in_point_s=0.0, confidence=0.9, rationale="test"),
+            AssetBinding(
+                slot_id="slot_01", asset_id=str(clip_a), in_point_s=0.0, duration_s=1.5, confidence=0.9, rationale="test"
+            ),
+            AssetBinding(
+                slot_id="slot_02", asset_id=str(clip_b), in_point_s=0.0, duration_s=1.0, confidence=0.9, rationale="test"
+            ),
         ],
         unresolved_slots=[],
     )

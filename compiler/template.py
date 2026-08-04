@@ -72,10 +72,14 @@ def compile_template(trace: EditTrace, *, semantics: SemanticAnnotations | None 
                 f"has low confidence ({layer.style.font_confidence:.2f})"
             )
 
-    audio_ref = AudioRef(beat_grid_s=trace.audio.beat_grid_s)
+    audio_ref = AudioRef(
+        beat_grid_s=trace.audio.beat_grid_s,
+        median_cut_offset_frames=trace.audio.median_cut_offset_frames,
+    )
 
     return Template(
         source_trace_hash=trace.source.hash,
+        source_fps=trace.source.fps,
         slots=slots,
         audio_ref=audio_ref,
         text_layers=trace.text_layers,

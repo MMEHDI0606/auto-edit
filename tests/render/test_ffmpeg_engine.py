@@ -58,6 +58,7 @@ def _slot(slot_id: str, order: int, duration_s: float, primitive=MotionPrimitive
 def three_slot_template() -> Template:
     return Template(
         source_trace_hash="deadbeef",
+        source_fps=30,
         slots=[
             _slot("slot_01", 1, 1.0, primitive=MotionPrimitive.punch_in, out_transition="dissolve"),
             _slot("slot_02", 2, 0.8, primitive=MotionPrimitive.static, out_transition="cut"),
@@ -77,8 +78,12 @@ def bindings_with_one_unresolved(tmp_path) -> BindingSet:
     return BindingSet(
         binding_id="b1",
         bindings=[
-            AssetBinding(slot_id="slot_01", asset_id=str(clip_a), in_point_s=0.0, confidence=0.9, rationale="test"),
-            AssetBinding(slot_id="slot_02", asset_id=str(clip_b), in_point_s=0.0, confidence=0.9, rationale="test"),
+            AssetBinding(
+                slot_id="slot_01", asset_id=str(clip_a), in_point_s=0.0, duration_s=1.0, confidence=0.9, rationale="test"
+            ),
+            AssetBinding(
+                slot_id="slot_02", asset_id=str(clip_b), in_point_s=0.0, duration_s=0.8, confidence=0.9, rationale="test"
+            ),
         ],
         unresolved_slots=["slot_03"],
     )

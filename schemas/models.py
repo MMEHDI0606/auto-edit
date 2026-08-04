@@ -364,12 +364,25 @@ class AudioRef(BaseModel):
     artist: Optional[str] = None
     start_offset_s: float = 0.0
     beat_grid_s: list[float] = Field(default_factory=list)
+    # GAP FOUND during Unit 3.8 (matcher/): compiler.beat_snap.snap_duration_to_beat()
+    # needs the source edit's median_cut_offset_frames to reproduce the same
+    # "cut slightly before the beat" stylistic offset at match time (spec sec
+    # 3.4/6 step 4) - AudioTrace already measures it (signals/audio.py), but
+    # it was never carried forward into the compiled Template, so the matcher
+    # had no way to snap an asset's out-point the same way Unit 2.2 intended.
+    median_cut_offset_frames: int = 0
     embed_permitted: Literal[False] = False  # type-level guarantee: always False in v1
 
 
 class Template(BaseModel):
     template_version: Literal["1.0"] = "1.0"
     source_trace_hash: str
+    # GAP FOUND during Unit 3.8 (matcher/): pick_in_point()/match_assets()
+    # need an fps to convert median_cut_offset_frames into seconds when
+    # beat-snapping an asset's out-point (compiler.beat_snap.snap_duration_to_beat
+    # takes fps directly) - Template carried source_trace_hash for
+    # provenance but never the source fps itself.
+    source_fps: int
     slots: list[Slot]
     audio_ref: AudioRef
     # GAP FOUND during Unit 2.7 (render/): the original scaffold's Template
@@ -395,6 +408,14 @@ class AssetBinding(BaseModel):
     slot_id: str
     asset_id: str
     in_point_s: float
+    # GAP FOUND during Unit 3.8 (matcher/assign.py): pick_in_point() runs the
+    # chosen window through compiler.beat_snap.snap_duration_to_beat() to
+    # adjust the out-point against the template's beat grid (spec sec 6 step
+    # 4) - but AssetBinding had no field to carry that adjusted duration,
+    # only in_point_s. Without this, the snap result would be computed and
+    # then silently discarded; render/ needs in_point_s + duration_s to know
+    # exactly what to trim from the asset.
+    duration_s: float
     confidence: confloat(ge=0, le=1)
     rationale: str = Field(
         ..., description="Human-readable justification, e.g. 'closest CLIP match for role=hook'"
