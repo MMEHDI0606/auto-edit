@@ -12,6 +12,7 @@ from schemas.models import (
     Grade,
     MotionCurve,
     MotionPrimitive,
+    SemanticShotAnnotation,
     Shot,
     ShotContent,
     ShotEffect,
@@ -67,6 +68,55 @@ def test_human_instruction_mentions_present_effects() -> None:
     shot = _shot(effects=[ShotEffect(type=EffectType.freeze, params={"duration_f": 8}, confidence=1.0)])
     instruction = generate_human_instruction(shot)
     assert "freeze" in instruction.lower()
+
+
+# --------------------------------------------------------------------------
+# Unit 3.5 - richer, annotation-aware phrasing (prefers annotation.role over
+# the generic mechanical opener when a validated annotation is available)
+# --------------------------------------------------------------------------
+
+
+def test_human_instruction_uses_role_opener_when_annotation_present() -> None:
+    shot = _shot(primitive=MotionPrimitive.punch_in, has_face=True)
+    annotation = SemanticShotAnnotation(shot_id="s1", role="hook", role_confidence=0.9, model_id="claude-sonnet-5")
+
+    instruction = generate_human_instruction(shot, annotation=annotation)
+
+    assert "hook" in instruction.lower()
+    assert "drop a clip here" not in instruction.lower()  # replaced, not just appended
+
+
+def test_human_instruction_falls_back_to_mechanical_when_no_annotation() -> None:
+    shot = _shot(primitive=MotionPrimitive.punch_in)
+    instruction = generate_human_instruction(shot, annotation=None)
+    assert instruction.lower().startswith("drop a clip here")
+
+
+def test_human_instruction_falls_back_to_mechanical_when_annotation_has_no_role() -> None:
+    shot = _shot(primitive=MotionPrimitive.static)
+    annotation = SemanticShotAnnotation(shot_id="s1", role=None, role_confidence=0.0, model_id="claude-sonnet-5")
+    instruction = generate_human_instruction(shot, annotation=annotation)
+    assert instruction.lower().startswith("drop a clip here")
+
+
+def test_human_instruction_with_annotation_still_only_states_true_facts() -> None:
+    # Same evidence-gating rule as the mechanical version - richer phrasing
+    # must not introduce a NEW unvalidated claim on top of annotation.role.
+    shot = _shot(primitive=MotionPrimitive.static, has_face=False)
+    annotation = SemanticShotAnnotation(shot_id="s1", role="reveal", role_confidence=0.8, model_id="claude-sonnet-5")
+    instruction = generate_human_instruction(shot, annotation=annotation)
+    assert "glitch" not in instruction.lower()
+    assert "shake" not in instruction.lower()
+    assert "face" not in instruction.lower()  # has_face is False - must not claim one
+
+
+def test_human_instruction_unrecognized_role_still_gets_a_serviceable_opener() -> None:
+    shot = _shot()
+    annotation = SemanticShotAnnotation(
+        shot_id="s1", role="establishing_wide", role_confidence=0.6, model_id="claude-sonnet-5"
+    )
+    instruction = generate_human_instruction(shot, annotation=annotation)
+    assert "establishing_wide" in instruction
 
 
 def test_motion_pref_static_is_low() -> None:

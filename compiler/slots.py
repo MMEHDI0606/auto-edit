@@ -49,6 +49,20 @@ _EFFECT_DESCRIPTIONS: dict[EffectType, str] = {
     EffectType.speed_ramp: "Includes a speed ramp (approximate timing).",
 }
 
+# Unit 3.5 - natural phrasing for common narrative roles (spec sec 4.2's
+# examples). An unrecognized role string still gets a serviceable opener
+# via the f-string fallback in generate_human_instruction() - this dict is
+# just nicer wording for the roles worth naming explicitly, not a
+# whitelist (the role has ALREADY been evidence-gated by the time it gets
+# here; this module never rejects one).
+_ROLE_OPENERS: dict[str, str] = {
+    "hook": "This is your hook shot",
+    "before_state": "This is the 'before' shot",
+    "reveal": "This is your reveal shot",
+    "reaction": "This is your reaction shot",
+    "cta": "This is your call-to-action shot",
+}
+
 
 def _transition_id(transition: Transition) -> str:
     parts = [transition.type.value]
@@ -90,16 +104,23 @@ def derive_duration_flex(shot: Shot, *, beat_grid_s: list[float]) -> dict:
 
 def generate_human_instruction(shot: Shot, *, annotation: SemanticShotAnnotation | None = None) -> str:
     """Mechanical (L1-only) instruction when annotation is None; richer
-    phrasing when semantic role/content is available. Must never state a
-    fact not backed by shot.effects/motion/content - same rule as L2.
+    phrasing when semantic role/content is available (Unit 3.5). Must
+    never state a fact not backed by shot.effects/motion/content, or on
+    the annotation - same rule as L2.
 
-    L2-aware phrasing (when `annotation` is supplied) is deferred to
-    Phase 3 per this module's own docstring - Phase 2 always generates the
-    mechanical version; `annotation` is accepted now so the signature
-    doesn't need to change again once Phase 3 wires a real one in.
+    `annotation` is assumed to have ALREADY passed semantics/gating.py's
+    validate_annotation() by the time it reaches this function (Units 3.1/
+    3.4's job, not this one's) - this function trusts annotation.role as
+    given, but never derives or introduces a NEW unvalidated claim of its
+    own on top of it.
     """
     duration_s = shot.t_out - shot.t_in
-    parts = [f"Drop a clip here (~{duration_s:.1f}s)."]
+
+    if annotation is not None and annotation.role:
+        opener = _ROLE_OPENERS.get(annotation.role, f"This is your {annotation.role} shot")
+        parts = [f"{opener} (~{duration_s:.1f}s)."]
+    else:
+        parts = [f"Drop a clip here (~{duration_s:.1f}s)."]
 
     motion_desc = _MOTION_DESCRIPTIONS.get(shot.motion.primitive)
     if motion_desc:
