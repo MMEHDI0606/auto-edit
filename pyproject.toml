@@ -42,14 +42,18 @@ ocr = [
 local-vlm = []  # fill in when semantics/providers/local_provider.py is implemented
 audio-sep = ["demucs==4.1.0"]  # pulled in only where signals/audio.py::separate_speech_music is used - heavy (torch)
 golden-import = [
-    "opentimelineio==0.17.0",  # VERIFY against latest PyPI release at Unit 0.4 implementation time -
-                               # this pin predates that unit's build. Core adapters used: otio_json
-                               # (native .otio) and fcp_xml (legacy FCP7/xmeml XML - this is what
-                               # Premiere Pro's "Export > Final Cut Pro XML" actually produces).
-    "opentimelineio-contrib==0.17.0",  # separate package, NOT bundled in core opentimelineio - needed
-                                       # for fcpx_xml (modern Apple FCPXML, .fcpxml) and the optional
-                                       # AAF adapter. Less consistently maintained than core; treat
-                                       # .fcpxml import as best-effort, not equal-reliability to fcp_xml.
+    "opentimelineio==0.18.1",  # core ships ONLY otio_json/otioz/otiod - fcp_xml/fcpx_xml/AAF are
+                               # separate plugin packages below, NOT an "opentimelineio-contrib"
+                               # package (that package does not exist on PyPI - verified directly;
+                               # the original plan assumed it did and was wrong). Each of the three
+                               # packages below self-registers its adapter into
+                               # otio.adapters.available_adapter_names() on import via OTIO's plugin
+                               # manifest mechanism - no explicit registration code needed.
+    "otio-fcp-adapter==1.0.0",  # legacy FCP7/xmeml XML - this is what Premiere Pro's own
+                                # "Export > Final Cut Pro XML" actually produces. Mature, reliable.
+    "otio-fcpx-xml-adapter==1.0.0",  # modern Apple FCPXML (.fcpxml) - community-maintained,
+                                     # treat as best-effort, not equal-reliability to otio-fcp-adapter.
+    "otio-aaf-adapter==2.0.0",  # optional AAF (.aaf) support - not required for Unit 0.4's done criteria.
 ]
 # golden-import is eval/dev-tooling ONLY (eval/golden/import_project_file.py, Unit 0.4) - it must
 # never be imported by signals/, compiler/, or anything on the production analysis/render path.
