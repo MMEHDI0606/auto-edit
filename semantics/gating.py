@@ -16,7 +16,18 @@ a repair prompt; a second failure raises rather than emitting garbage.
 
 from __future__ import annotations
 
-from schemas.models import EditTrace, SemanticShotAnnotation
+import re
+
+from schemas.models import EditTrace, EffectType, MotionPrimitive, SemanticShotAnnotation, TransitionType
+
+# Every label string L2 could ever possibly assert, across all three
+# evidence-bearing dimensions (effects / transitions / motion primitives).
+# `allowed_labels_for_shot` narrows this to what one shot's Shot object
+# actually licenses; `validate_annotation` checks a claim against that
+# narrowed set, not this full set.
+_ALL_EVIDENCE_LABELS: set[str] = (
+    {e.value for e in EffectType} | {t.value for t in TransitionType} | {m.value for m in MotionPrimitive}
+)
 
 
 class EvidenceViolation(Exception):
@@ -29,7 +40,29 @@ def allowed_labels_for_shot(trace: EditTrace, shot_id: str) -> set[str]:
     this shot - computed from Shot.effects, Shot.motion.primitive, and
     Shot.in_transition/out_transition. This is the allowlist a provider's
     output is checked against."""
-    raise NotImplementedError
+    shot = next((s for s in trace.shots if s.id == shot_id), None)
+    if shot is None:
+        raise ValueError(f"no shot with id {shot_id!r} in this trace")
+
+    allowed: set[str] = {effect.type.value for effect in shot.effects}
+    allowed.add(shot.in_transition.type.value)
+    allowed.add(shot.out_transition.type.value)
+    allowed.add(shot.motion.primitive.value)
+    return allowed
+
+
+def _asserted_labels(text: str) -> set[str]:
+    """Which evidence labels does this free-text field assert, if any -
+    matched as whole words/phrases (underscores treated as spaces) so
+    "static" or "cut" appearing as an ordinary English word inside a longer
+    unrelated word doesn't false-positive (e.g. "cutaway" != "cut")."""
+    normalized = re.sub(r"[_\-]+", " ", text.lower())
+    found = set()
+    for label in _ALL_EVIDENCE_LABELS:
+        phrase = label.replace("_", " ")
+        if re.search(rf"\b{re.escape(phrase)}\b", normalized):
+            found.add(label)
+    return found
 
 
 def validate_annotation(annotation: SemanticShotAnnotation, allowed: set[str]) -> SemanticShotAnnotation:
@@ -38,8 +71,27 @@ def validate_annotation(annotation: SemanticShotAnnotation, allowed: set[str]) -
     role field asserts something evidence-incompatible); callers should
     catch this per-shot and fall back to an unlabeled/low-confidence
     annotation rather than failing the whole job.
+
+    v1's SemanticShotAnnotation only carries one free-text claim field
+    (`role`) that could smuggle in an effect/transition/motion claim -
+    checked here by scanning it for evidence-label words. `role` values
+    that are ordinary descriptive words ("hook", "reaction") assert nothing
+    and always pass through unchanged.
     """
-    raise NotImplementedError
+    role = annotation.role
+    if not role:
+        return annotation
+
+    asserted = _asserted_labels(role)
+    unlicensed = asserted - allowed
+
+    if unlicensed:
+        raise EvidenceViolation(
+            f"annotation for shot {annotation.shot_id!r} asserts label(s) {sorted(unlicensed)} "
+            f"via role={role!r}, not licensed by this shot's evidence (allowed={sorted(allowed)})"
+        )
+
+    return annotation
 
 
 def repair_or_fail(raw_model_output: str, schema, *, retry_fn) -> dict:
