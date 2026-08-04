@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 
 from render.interface import RenderEngine, RenderOptions, RenderReport
+from render.report import add_approximation
 from schemas.models import AssetBinding, BindingSet, MotionPrimitive, Slot, Template
 
 _FONT_FILE = r"C:\Windows\Fonts\arial.ttf".replace("\\", "/").replace(":", "\\:")
@@ -43,17 +44,18 @@ class FfmpegEngine(RenderEngine):
 
                 if binding is None or slot.slot_id in bindings.unresolved_slots:
                     self._render_placeholder(segment_path, slot, opts)
-                    approximations.append(f"{slot.slot_id}: no asset bound - rendered as MISSING placeholder")
+                    add_approximation(approximations, slot.slot_id, "no asset bound - rendered as MISSING placeholder")
                 else:
                     self._render_bound_clip(segment_path, slot, binding, opts)
                     if slot.applied.motion.primitive != MotionPrimitive.static:
-                        approximations.append(
-                            f"{slot.slot_id}: {slot.applied.motion.primitive.value} motion "
-                            "not rendered by ffmpeg engine (cut-only)"
+                        add_approximation(
+                            approximations, slot.slot_id,
+                            f"{slot.applied.motion.primitive.value} motion not rendered by ffmpeg engine (cut-only)",
                         )
                     if slot.applied.out_transition.startswith("dissolve"):
-                        approximations.append(
-                            f"{slot.slot_id}: dissolve transition approximated as a hard cut by ffmpeg engine"
+                        add_approximation(
+                            approximations, slot.slot_id,
+                            "dissolve transition approximated as a hard cut by ffmpeg engine",
                         )
 
                 segment_paths.append(segment_path)

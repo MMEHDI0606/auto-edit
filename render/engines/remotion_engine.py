@@ -30,6 +30,7 @@ from pathlib import Path
 
 from render.effects_library.primitives import nearest_fallback_primitive
 from render.interface import RenderEngine, RenderOptions, RenderReport
+from render.report import add_approximation
 from schemas.models import AssetBinding, BindingSet, EffectType, Template
 
 _REMOTION_APP_DIR = Path(__file__).resolve().parent.parent / "remotion_app"
@@ -126,12 +127,12 @@ def _compute_approximations(template: Template) -> list[str]:
         primitive_name = slot.applied.motion.primitive.value
         fallback = nearest_fallback_primitive(primitive_name)
         if fallback != primitive_name:
-            approximations.append(f"{slot.slot_id}: {primitive_name} motion substituted with {fallback}")
+            add_approximation(approximations, slot.slot_id, f"{primitive_name} motion substituted with {fallback}")
 
         for effect in slot.applied.effects:
             if effect.type in _UNSUPPORTED_EFFECT_TYPES:
-                approximations.append(
-                    f"{slot.slot_id}: {effect.type.value} effect has no render primitive - not rendered"
+                add_approximation(
+                    approximations, slot.slot_id, f"{effect.type.value} effect has no render primitive - not rendered"
                 )
 
     return approximations
