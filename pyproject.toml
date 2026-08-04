@@ -30,6 +30,7 @@ dependencies = [
     "numpy==1.26.4",  # pinned <2.0: opencv-python 4.11 wheels + scenedetect are built/tested against numpy 1.x
     "python-multipart==0.0.32",
     "structlog==26.1.0",
+    "Pillow==12.3.0",  # semantics/evidence_pack.py (Unit 3.2): contact-sheet tiling + timestamp burn-in
 ]
 
 [project.optional-dependencies]
