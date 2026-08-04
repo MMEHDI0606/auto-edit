@@ -99,6 +99,20 @@
       "title": "Easing",
       "type": "string"
     },
+    "EffectType": {
+      "enum": [
+        "freeze",
+        "speed_ramp",
+        "rgb_split",
+        "flash",
+        "blur_pulse",
+        "shake",
+        "overlay_grain",
+        "mask_cutout"
+      ],
+      "title": "EffectType",
+      "type": "string"
+    },
     "MotionCurve": {
       "description": "Fit result for camera motion within one shot (spec sec 3.2).",
       "properties": {
@@ -172,6 +186,31 @@
       "title": "MotionPrimitive",
       "type": "string"
     },
+    "ShotEffect": {
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/EffectType"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "confidence": {
+          "default": 1.0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "params"
+      ],
+      "title": "ShotEffect",
+      "type": "object"
+    },
     "Slot": {
       "properties": {
         "slot_id": {
@@ -241,6 +280,13 @@
           ],
           "default": null,
           "title": "Out Transition"
+        },
+        "effects": {
+          "items": {
+            "$ref": "#/$defs/ShotEffect"
+          },
+          "title": "Effects",
+          "type": "array"
         }
       },
       "required": [

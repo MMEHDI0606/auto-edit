@@ -138,6 +138,7 @@ def shot_to_slot(
         # something to key off without a schema change.
         grade_ref=f"grade_ref_{shot.id}",
         out_transition=_transition_id(shot.out_transition),
+        effects=shot.effects,
     )
 
     return Slot(

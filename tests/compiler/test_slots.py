@@ -125,3 +125,15 @@ def test_grade_ref_is_a_stable_placeholder_not_none() -> None:
     slot = shot_to_slot(_shot(), order=1)
     assert slot.applied.grade_ref is not None
     assert "s1" in slot.applied.grade_ref
+
+
+def test_shot_effects_carry_through_to_slot_applied() -> None:
+    # Regression guard: SlotApplied originally had no effects field at all,
+    # so every detected freeze/shake/flash/rgb_split/speed_ramp effect from
+    # Phase 1 was silently dropped during compilation - no render engine
+    # could ever see them.
+    effect = ShotEffect(type=EffectType.shake, params={"amplitude_px": 5.0, "freq_hz": 8.0}, confidence=1.0)
+    shot = _shot(effects=[effect])
+    slot = shot_to_slot(shot, order=1)
+    assert len(slot.applied.effects) == 1
+    assert slot.applied.effects[0].type == EffectType.shake

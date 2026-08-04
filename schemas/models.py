@@ -334,6 +334,11 @@ class SlotApplied(BaseModel):
     motion: MotionCurve
     grade_ref: Optional[str] = None
     out_transition: Optional[str] = None
+    # GAP FOUND during Unit 2.7 (render/): shot_to_slot() never copied
+    # Shot.effects through at all - every detected freeze/shake/flash/
+    # rgb_split/speed_ramp effect from Phase 1 was silently dropped during
+    # compilation, so no render engine could ever see them.
+    effects: list[ShotEffect] = Field(default_factory=list)
 
 
 class Slot(BaseModel):
