@@ -30,4 +30,20 @@ def snap_duration_to_beat(
 ) -> tuple[float, bool]:
     """Returns (snapped_duration_s, was_snapped). See module docstring for
     the exact definition - implement to that spec, do not re-derive it."""
-    raise NotImplementedError
+    window_start = t_start_s + min_s
+    window_end = t_start_s + max_s
+    candidate_beats = [b for b in beat_grid_s if window_start <= b <= window_end]
+    if not candidate_beats:
+        return nominal_s, False
+
+    offset_s = median_cut_offset_frames / fps
+    best_duration = nominal_s
+    best_diff = float("inf")
+    for beat_time in candidate_beats:
+        candidate_duration = beat_time - offset_s - t_start_s
+        diff = abs(candidate_duration - nominal_s)
+        if diff < best_diff:
+            best_diff = diff
+            best_duration = candidate_duration
+
+    return best_duration, True
