@@ -134,3 +134,27 @@ same blocker as everything else in this file. Not urgent to unblock
 specifically for this unit - the 2 real fixtures already exercise every
 code path; more variety would sharpen confidence in the coarse shot-type/
 motion-score heuristics, not change the implementation.
+
+## Units 2.9 and 3.9 - blind-viewer eval gates, both blocked (chained)
+
+Neither has anything left to build - both are pure human-evaluation
+protocols, not code:
+
+- **Unit 2.9** (Phase 2): 10 templates rendered with HAND-assigned real
+  footage, shown to 5 blind human viewers, Likert-scored against the
+  original edit. Needs real short-form source videos (same blocker as
+  Unit 0.3/1.19) AND 5 actual human raters - neither exists in this
+  environment.
+- **Unit 3.9** (Phase 3): repeats Unit 2.9's exact protocol but with
+  Unit 3.8's matcher auto-assigning footage from a REAL candidate-clip pool
+  per template (varied enough that the matcher has genuine choices to
+  make) instead of hand-assigned clips, then compares the resulting score
+  against Unit 2.9's number using a margin chosen *before* looking at the
+  result. Explicitly depends on Unit 2.9's baseline (BUILD_ORDER.md/
+  INSTRUCTIONS.md's own stated dependency) - blocked transitively even if
+  a real clip pool existed, since there is no Unit 2.9 number to compare
+  against yet.
+
+Not something to fabricate a number for either way. Unblock by supplying
+real footage (Path A/B above) and, when the time comes, help lining up 5
+people willing to give Likert ratings on 10 short renders.
