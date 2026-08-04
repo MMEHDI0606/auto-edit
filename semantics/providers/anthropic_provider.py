@@ -35,8 +35,9 @@ from pathlib import Path
 import anthropic
 
 from schemas.models import SemanticShotAnnotation, StyleSummary
+from semantics.gating import repair_or_fail
 from semantics.providers.base import SemanticProvider
-from semantics.schemas import DeepPassPromptInputs, TriagePromptInputs
+from semantics.schemas import DeepPassModelOutput, DeepPassPromptInputs, TriagePromptInputs
 
 _TRIAGE_JSON_SCHEMA = {
     "type": "object",
@@ -56,6 +57,25 @@ _TRIAGE_JSON_SCHEMA = {
 }
 
 _TRIAGE_MAX_TOKENS = 1024
+
+_DEEP_PASS_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "role": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": (
+                "This shot's narrative role, e.g. 'hook', 'before_state', 'reveal', 'reaction', or null if "
+                "none applies. If describing any effect/transition/camera-motion quality, ONLY use a label "
+                "from the allowed_effect_labels list given in the prompt - never one absent from it."
+            ),
+        },
+        "role_confidence": {"type": "number", "description": "0..1 confidence in the role label"},
+    },
+    "required": ["role", "role_confidence"],
+    "additionalProperties": False,
+}
+
+_DEEP_PASS_MAX_TOKENS = 1024
 
 
 class AnthropicProvider(SemanticProvider):
@@ -104,4 +124,50 @@ class AnthropicProvider(SemanticProvider):
         return StyleSummary(**parsed, model_id=self.model_id)
 
     def deep_pass(self, inputs: DeepPassPromptInputs) -> SemanticShotAnnotation:
-        raise NotImplementedError  # Unit 3.4
+        image_bytes = Path(inputs.contact_sheet_path).read_bytes()
+        image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+
+        def build_prompt_text(repair_note: str | None) -> str:
+            ocr_text = "; ".join(inputs.ocr_strings) if inputs.ocr_strings else "(none detected)"
+            transcript_text = inputs.transcript_snippet or "(none)"
+            allowed_text = ", ".join(inputs.allowed_effect_labels) if inputs.allowed_effect_labels else "(none)"
+            text = (
+                "This is a contact sheet of one shot's first/middle/last frame, timestamps burned in. "
+                f"On-screen text (OCR, may contain errors): {ocr_text}. "
+                f"Speech transcript snippet: {transcript_text}. "
+                "Describe this shot's narrative role (e.g. 'hook', 'before_state', 'reveal', 'reaction') if "
+                "one clearly applies, or null if none does. If your description references any effect, "
+                "transition, or camera-motion quality, you may ONLY use one of these evidence-backed labels: "
+                f"{allowed_text}. Never claim an effect/transition/motion label not in that list - it was not "
+                "detected on this shot."
+            )
+            if repair_note:
+                text += (
+                    f"\n\nYour previous response failed validation: {repair_note}\n"
+                    "Return corrected JSON matching the schema."
+                )
+            return text
+
+        def call(repair_note: str | None = None) -> str:
+            response = self._client.messages.create(
+                model=self.model_id,
+                max_tokens=_DEEP_PASS_MAX_TOKENS,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {"type": "base64", "media_type": "image/png", "data": image_b64},
+                            },
+                            {"type": "text", "text": build_prompt_text(repair_note)},
+                        ],
+                    }
+                ],
+                output_config={"format": {"type": "json_schema", "schema": _DEEP_PASS_JSON_SCHEMA}},
+            )
+            return next(block.text for block in response.content if block.type == "text")
+
+        raw = call()
+        validated = repair_or_fail(raw, DeepPassModelOutput, retry_fn=call)
+        return SemanticShotAnnotation(shot_id=inputs.shot_id, model_id=self.model_id, **validated)

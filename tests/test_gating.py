@@ -8,6 +8,7 @@ discovered later against a real (expensive, slow) model call.
 from __future__ import annotations
 
 import pytest
+from pydantic import BaseModel, ValidationError
 
 from schemas.models import (
     AudioTrace,
@@ -23,7 +24,7 @@ from schemas.models import (
     Transition,
     TransitionType,
 )
-from semantics.gating import EvidenceViolation, allowed_labels_for_shot, validate_annotation
+from semantics.gating import EvidenceViolation, allowed_labels_for_shot, repair_or_fail, validate_annotation
 
 
 def _make_shot(shot_id: str = "shot1") -> Shot:
@@ -112,3 +113,77 @@ def test_validate_annotation_raises_on_unlicensed_motion_primitive_claim() -> No
 def test_validate_annotation_no_role_is_a_noop() -> None:
     annotation = SemanticShotAnnotation(shot_id="shot1", role=None, model_id="test-model")
     assert validate_annotation(annotation, set()) is annotation
+
+
+# --------------------------------------------------------------------------
+# Unit 3.4 - repair_or_fail(): "one repair retry, then fail loudly" (spec 4.3)
+# --------------------------------------------------------------------------
+
+
+class _DummySchema(BaseModel):
+    role: str | None = None
+    role_confidence: float = 0.0
+
+
+def test_repair_or_fail_returns_dict_on_first_valid_response() -> None:
+    def retry_fn(_error: str) -> str:
+        raise AssertionError("retry_fn must not be called when the first response is already valid")
+
+    result = repair_or_fail('{"role": "hook", "role_confidence": 0.8}', _DummySchema, retry_fn=retry_fn)
+    assert result == {"role": "hook", "role_confidence": 0.8}
+
+
+def test_repair_or_fail_retries_once_and_succeeds() -> None:
+    calls: list[str] = []
+
+    def retry_fn(error_message: str) -> str:
+        calls.append(error_message)
+        return '{"role": "reveal", "role_confidence": 0.6}'
+
+    result = repair_or_fail("not json at all", _DummySchema, retry_fn=retry_fn)
+
+    assert result == {"role": "reveal", "role_confidence": 0.6}
+    assert len(calls) == 1
+    assert calls[0]  # the validation error message was actually passed through
+
+
+def test_repair_or_fail_raises_after_second_failure() -> None:
+    def retry_fn(_error: str) -> str:
+        return "still not json"
+
+    with pytest.raises(ValidationError):
+        repair_or_fail("not json at all", _DummySchema, retry_fn=retry_fn)
+
+
+# --------------------------------------------------------------------------
+# Unit 3.4 done criteria: deep_pass() -> validate_annotation() end-to-end.
+# A shot with only a freeze effect (narrow evidence, see _make_shot) must
+# never end up with a persisted annotation claiming an unlicensed effect -
+# either the model's claim is evidence-compliant and passes, or it isn't
+# and EvidenceViolation is raised (never silently passed through).
+# --------------------------------------------------------------------------
+
+
+def test_deep_pass_output_that_is_evidence_compliant_passes_validation() -> None:
+    trace = _make_trace(_make_shot())
+    allowed = allowed_labels_for_shot(trace, "shot1")
+    # Simulates a deep_pass() result that only claims what the shot's own
+    # evidence licenses (freeze, a real effect on this shot).
+    annotation = SemanticShotAnnotation(
+        shot_id="shot1", role="freeze-frame hook", role_confidence=0.85, model_id="claude-sonnet-5"
+    )
+    assert validate_annotation(annotation, allowed) is annotation
+
+
+def test_deep_pass_output_that_invents_an_effect_is_caught_not_silently_passed_through() -> None:
+    trace = _make_trace(_make_shot())
+    allowed = allowed_labels_for_shot(trace, "shot1")
+    # Simulates a deep_pass() result where the model ignored the prompt's
+    # allowed_effect_labels instruction and hallucinated rgb_split anyway -
+    # gating.py is the second, code-level enforcement layer for exactly
+    # this failure mode (spec sec 8.3).
+    annotation = SemanticShotAnnotation(
+        shot_id="shot1", role="rgb_split glitch reveal", role_confidence=0.9, model_id="claude-sonnet-5"
+    )
+    with pytest.raises(EvidenceViolation):
+        validate_annotation(annotation, allowed)

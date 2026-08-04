@@ -17,8 +17,13 @@ a repair prompt; a second failure raises rather than emitting garbage.
 from __future__ import annotations
 
 import re
+from typing import Callable, TypeVar
+
+from pydantic import BaseModel, ValidationError
 
 from schemas.models import EditTrace, EffectType, MotionPrimitive, SemanticShotAnnotation, TransitionType
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 # Every label string L2 could ever possibly assert, across all three
 # evidence-bearing dimensions (effects / transitions / motion primitives).
@@ -94,8 +99,21 @@ def validate_annotation(annotation: SemanticShotAnnotation, allowed: set[str]) -
     return annotation
 
 
-def repair_or_fail(raw_model_output: str, schema, *, retry_fn) -> dict:
+def repair_or_fail(raw_model_output: str, schema: type[_ModelT], *, retry_fn: Callable[[str], str]) -> dict:
     """Validate raw_model_output against `schema`; on failure, call
     retry_fn once with a repair prompt; on second failure raise (fail
-    loudly - spec sec 4.3, do not silently emit garbage)."""
-    raise NotImplementedError
+    loudly - spec sec 4.3, do not silently emit garbage).
+
+    `retry_fn` receives the first attempt's validation error message (to be
+    included in a repair prompt back to the model) and returns the new raw
+    JSON text - it owns the actual re-call to the provider, this function
+    only owns the validate/retry/fail POLICY, not the provider mechanics.
+    """
+    try:
+        return schema.model_validate_json(raw_model_output).model_dump()
+    except ValidationError as first_error:
+        repaired_raw = retry_fn(str(first_error))
+        try:
+            return schema.model_validate_json(repaired_raw).model_dump()
+        except ValidationError as second_error:
+            raise second_error from first_error

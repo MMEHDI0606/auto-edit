@@ -20,9 +20,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from schemas.models import StyleSummary
-from semantics.providers.anthropic_provider import _TRIAGE_JSON_SCHEMA, AnthropicProvider
-from semantics.schemas import TriagePromptInputs
+from schemas.models import SemanticShotAnnotation, StyleSummary
+from semantics.providers.anthropic_provider import _DEEP_PASS_JSON_SCHEMA, _TRIAGE_JSON_SCHEMA, AnthropicProvider
+from semantics.schemas import DeepPassPromptInputs, TriagePromptInputs
 
 
 @dataclass
@@ -32,23 +32,37 @@ class _FakeTextBlock:
 
 
 class _FakeResponse:
-    def __init__(self, payload: dict) -> None:
-        self.content = [_FakeTextBlock(text=json.dumps(payload))]
+    def __init__(self, text: str) -> None:
+        self.content = [_FakeTextBlock(text=text)]
 
 
 class _FakeMessages:
-    def __init__(self, payload: dict) -> None:
-        self._payload = payload
-        self.last_call_kwargs: dict | None = None
+    """Fake `client.messages`. `responses` may be a single dict (returned
+    every call, JSON-encoded) or a list of dict/raw-str items consumed in
+    call order (last item repeats once exhausted) - the list form is what
+    the repair-retry tests need: a malformed raw string on the first call,
+    valid JSON on the second."""
+
+    def __init__(self, responses) -> None:
+        self._responses = responses if isinstance(responses, list) else [responses]
+        self._call_index = 0
+        self.call_history: list[dict] = []
+
+    @property
+    def last_call_kwargs(self) -> dict | None:
+        return self.call_history[-1] if self.call_history else None
 
     def create(self, **kwargs):
-        self.last_call_kwargs = kwargs
-        return _FakeResponse(self._payload)
+        self.call_history.append(kwargs)
+        item = self._responses[min(self._call_index, len(self._responses) - 1)]
+        self._call_index += 1
+        text = item if isinstance(item, str) else json.dumps(item)
+        return _FakeResponse(text)
 
 
 class _FakeAnthropicClient:
-    def __init__(self, payload: dict) -> None:
-        self.messages = _FakeMessages(payload)
+    def __init__(self, responses) -> None:
+        self.messages = _FakeMessages(responses)
 
 
 @pytest.fixture()
@@ -117,7 +131,71 @@ def test_triage_parses_response_into_style_summary(whole_video_sheet_path) -> No
     )
 
 
-def test_deep_pass_still_not_implemented_until_unit_3_4(whole_video_sheet_path) -> None:
-    provider = AnthropicProvider(client=_FakeAnthropicClient({}))
-    with pytest.raises(NotImplementedError):
-        provider.deep_pass(None)  # type: ignore[arg-type]
+@pytest.fixture()
+def contact_sheet_path(tmp_path) -> Path:
+    path = tmp_path / "shot1_contact_sheet.png"
+    Image.new("RGB", (48, 16), color="red").save(path)
+    return path
+
+
+def _deep_pass_inputs(contact_sheet_path: Path, **overrides) -> DeepPassPromptInputs:
+    defaults = dict(
+        shot_id="shot1",
+        contact_sheet_path=str(contact_sheet_path),
+        allowed_effect_labels=["freeze", "cut", "static"],
+        ocr_strings=["HOOK TEXT"],
+        transcript_snippet="hey guys watch this",
+    )
+    defaults.update(overrides)
+    return DeepPassPromptInputs(**defaults)
+
+
+def test_deep_pass_sends_allowed_labels_ocr_and_transcript_in_prompt(contact_sheet_path) -> None:
+    fake_client = _FakeAnthropicClient({"role": "hook", "role_confidence": 0.9})
+    provider = AnthropicProvider(client=fake_client)
+
+    provider.deep_pass(_deep_pass_inputs(contact_sheet_path))
+
+    kwargs = fake_client.messages.last_call_kwargs
+    assert kwargs["model"] == "claude-sonnet-5"
+    assert kwargs["output_config"]["format"]["schema"] == _DEEP_PASS_JSON_SCHEMA
+    text_block = next(b for b in kwargs["messages"][0]["content"] if b["type"] == "text")
+    assert "freeze, cut, static" in text_block["text"]
+    assert "HOOK TEXT" in text_block["text"]
+    assert "hey guys watch this" in text_block["text"]
+
+
+def test_deep_pass_parses_response_into_semantic_shot_annotation(contact_sheet_path) -> None:
+    fake_client = _FakeAnthropicClient({"role": "hook", "role_confidence": 0.9})
+    provider = AnthropicProvider(client=fake_client)
+
+    result = provider.deep_pass(_deep_pass_inputs(contact_sheet_path))
+
+    assert result == SemanticShotAnnotation(shot_id="shot1", role="hook", role_confidence=0.9, model_id="claude-sonnet-5")
+
+
+def test_deep_pass_repairs_once_on_malformed_json_then_succeeds(contact_sheet_path) -> None:
+    fake_client = _FakeAnthropicClient(["not valid json at all", {"role": "reaction", "role_confidence": 0.7}])
+    provider = AnthropicProvider(client=fake_client)
+
+    result = provider.deep_pass(_deep_pass_inputs(contact_sheet_path))
+
+    assert result.role == "reaction"
+    assert len(fake_client.messages.call_history) == 2
+    repair_prompt = next(
+        b["text"] for b in fake_client.messages.call_history[1]["messages"][0]["content"] if b["type"] == "text"
+    )
+    assert "failed validation" in repair_prompt
+
+
+def test_deep_pass_raises_after_second_malformed_response(contact_sheet_path) -> None:
+    from pydantic import ValidationError
+
+    fake_client = _FakeAnthropicClient(["still not json", "still not json either"])
+    provider = AnthropicProvider(client=fake_client)
+
+    with pytest.raises(ValidationError):
+        provider.deep_pass(_deep_pass_inputs(contact_sheet_path))
+
+    assert len(fake_client.messages.call_history) == 2
+
