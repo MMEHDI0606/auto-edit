@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     # --- L4 matcher ---
     max_asset_reuse_count: int = 2
 
+    # --- L6 MCP server / job store (Phase 4) ---
+    redis_url: str = "redis://localhost:6379/0"
+    # Default True: no real Celery worker process is deployed anywhere yet
+    # in this environment, so tasks run in-process synchronously when
+    # called via .delay()/.apply_async() - the job_id/polling contract
+    # still holds (a caller still gets a job_id back immediately and polls
+    # get_job), it just resolves instantly instead of asynchronously. A
+    # real deployment with a separate worker process should override this
+    # to False via RECUT_CELERY_TASK_ALWAYS_EAGER=false.
+    celery_task_always_eager: bool = True
+
     # --- L5 render ---
     render_width: int = 1080
     render_height: int = 1920

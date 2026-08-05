@@ -37,7 +37,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "ruff", "mypy"]
+dev = [
+    "pytest", "pytest-cov", "ruff", "mypy",
+    "fakeredis==2.37.0",  # tests/api/ - real redis-py wire protocol against memory, no server needed
+    "httpx==0.28.1",  # tests/api/test_main.py's FastAPI TestClient needs this explicitly - was only
+                      # present transitively (via the `semantics` extra's anthropic SDK) before, which
+                      # would silently break a dev+test install that skips that extra.
+]
 ocr = [
     "paddleocr==2.9.1",
     "paddlepaddle==2.6.2",  # NOT 3.x - paddleocr 2.9.1 targets paddle 2.x; 3.x's oneDNN backend
