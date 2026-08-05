@@ -23,7 +23,7 @@ from scipy.optimize import linear_sum_assignment
 from compiler.beat_snap import snap_duration_to_beat
 from matcher.probe import AssetFeatures, frame_diff_motion_score
 from matcher.score import cost_matrix
-from schemas.models import AssetBinding, BindingSet, SlotRequirements, Template
+from schemas.models import AssetBinding, BindingSet, Slot, SlotRequirements, Template
 
 CONFIDENCE_FLOOR = 0.4  # starting point, per Unit 3.8 - tune against Unit 3.9's blind-viewer numbers
 
@@ -83,6 +83,53 @@ def _build_rationale(asset: AssetFeatures, requirements: SlotRequirements, score
     if not reasons:
         reasons.append("best available match, no strong slot constraints")
     return f"{'; '.join(reasons)} (score={score:.2f})"
+
+
+def build_binding(
+    slot: Slot,
+    asset: AssetFeatures,
+    *,
+    slot_start_s: float,
+    beat_grid_s: list[float],
+    median_cut_offset_frames: int,
+    fps: int,
+    confidence: float,
+    rationale: str,
+) -> tuple[AssetBinding, float]:
+    """Builds one AssetBinding: picks the best in-point within `asset`,
+    beat-snaps the slot's duration against `slot_start_s` (the slot's
+    position on the TEMPLATE's own timeline, NOT a position within the
+    asset - see match_assets' own note on this). Returns (binding,
+    snapped_duration_s) - the caller advances its own timeline cursor by
+    the returned duration, since only the caller knows whether it's
+    iterating every slot in order (match_assets()) or a caller-supplied
+    subset (mcp.tools.bind(), Unit 4.3).
+
+    Shared by match_assets() (automatic proposals) and mcp.tools.bind()
+    (user-confirmed/overridden picks) so the actual in-point/beat-snap
+    math exists in exactly one place.
+    """
+    in_point_s = pick_in_point(asset, required_duration_s=slot.duration_s)
+
+    snapped_duration_s, _was_snapped = snap_duration_to_beat(
+        min_s=slot.duration_flex.min_s,
+        max_s=slot.duration_flex.max_s,
+        nominal_s=slot.duration_s,
+        t_start_s=slot_start_s,
+        beat_grid_s=beat_grid_s,
+        median_cut_offset_frames=median_cut_offset_frames,
+        fps=fps,
+    )
+
+    binding = AssetBinding(
+        slot_id=slot.slot_id,
+        asset_id=asset.asset_id,
+        in_point_s=in_point_s,
+        duration_s=snapped_duration_s,
+        confidence=confidence,
+        rationale=rationale,
+    )
+    return binding, snapped_duration_s
 
 
 def match_assets(template: Template, assets: list[AssetFeatures], *, max_reuse: int) -> BindingSet:
@@ -148,28 +195,17 @@ def match_assets(template: Template, assets: list[AssetFeatures], *, max_reuse: 
             continue
 
         asset = assets[asset_index]
-        in_point_s = pick_in_point(asset, required_duration_s=slot.duration_s)
-
-        snapped_duration_s, _was_snapped = snap_duration_to_beat(
-            min_s=slot.duration_flex.min_s,
-            max_s=slot.duration_flex.max_s,
-            nominal_s=slot.duration_s,
-            t_start_s=slot_start_s,
+        binding, snapped_duration_s = build_binding(
+            slot,
+            asset,
+            slot_start_s=slot_start_s,
             beat_grid_s=template.audio_ref.beat_grid_s,
             median_cut_offset_frames=template.audio_ref.median_cut_offset_frames,
             fps=template.source_fps,
+            confidence=score,
+            rationale=_build_rationale(asset, slot.requirements, score),
         )
         timeline_cursor_s += snapped_duration_s
-
-        bindings.append(
-            AssetBinding(
-                slot_id=slot.slot_id,
-                asset_id=asset.asset_id,
-                in_point_s=in_point_s,
-                duration_s=snapped_duration_s,
-                confidence=score,
-                rationale=_build_rationale(asset, slot.requirements, score),
-            )
-        )
+        bindings.append(binding)
 
     return BindingSet(binding_id=str(uuid.uuid4()), bindings=bindings, unresolved_slots=unresolved_slots)

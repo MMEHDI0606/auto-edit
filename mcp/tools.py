@@ -24,9 +24,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from api.store import JobStore
+from api.store import AssetStore, BindingStore, JobStore, TemplateStore
 from api.workers import analyze_video_task
-from schemas.models import EditTrace
+from common.config import load_settings
+from schemas.models import BindingSet, EditTrace
 
 # Top-level EditTrace fields a get_trace(sections=...) caller may request -
 # anything else raises rather than silently returning nothing.
@@ -112,32 +113,117 @@ def get_trace(job_id: str, sections: list[str] | None = None) -> dict:
 
 
 def get_template(job_id: str, format: Literal["recut", "otio", "remotion"] = "recut") -> dict:
-    raise NotImplementedError
+    if format != "recut":
+        raise NotImplementedError(
+            f"format={format!r} not yet implemented - compiler/otio_export.py and the Remotion props "
+            "serializer don't exist yet (Phase 5+). Only format='recut' (native JSON) is supported."
+        )
+
+    job = JobStore().get(job_id)
+    result_refs = job.get("result_refs") or {}
+    template_id = result_refs.get("template_id")
+    if template_id is None:
+        raise ValueError(
+            f"job {job_id!r} has no compiled template - analyze_video() must be called with depth='full'"
+        )
+
+    template = TemplateStore().get(template_id)
+    return {"template_id": template_id, "template": template.model_dump()}
 
 
 def describe_template(template_id: str) -> dict:
     """Human-readable breakdown + per-slot instructions - the "read the
-    edit" feature."""
-    raise NotImplementedError
+    edit" feature. Built entirely from Template.slots[*].human_instruction
+    (already evidence-gated, per compiler/slots.py) - this function adds
+    no new claims of its own, only formatting."""
+    template = TemplateStore().get(template_id)
+    lines = [
+        f"Slot {i}/{len(template.slots)} ({slot.slot_id}, ~{slot.duration_s:.1f}s): {slot.human_instruction}"
+        for i, slot in enumerate(template.slots, start=1)
+    ]
+    return {
+        "template_id": template_id,
+        "slot_count": len(template.slots),
+        "description": "\n".join(lines),
+    }
 
 
 def list_slots(template_id: str) -> list[dict]:
-    raise NotImplementedError
+    return [slot.model_dump() for slot in TemplateStore().get(template_id).slots]
 
 
 def register_assets(files: list[str]) -> list[str]:
-    """-> asset_ids."""
-    raise NotImplementedError
+    """-> asset_ids. Runs Unit 3.6's extract_asset_features on each file,
+    stores the result keyed by a generated asset_id."""
+    from matcher.probe import extract_asset_features
+
+    asset_store = AssetStore()
+    asset_ids = []
+    for file_path in files:
+        asset_id = asset_store.new_id()
+        features = extract_asset_features(Path(file_path), asset_id)
+        asset_store.put(asset_id, features)
+        asset_ids.append(asset_id)
+    return asset_ids
 
 
 def match_assets(template_id: str, asset_ids: list[str]) -> dict:
-    """-> proposed bindings + confidences."""
-    raise NotImplementedError
+    """-> proposed bindings + confidences (NOT persisted - bind() persists
+    the user's final, possibly-overridden choice). Calls Unit 3.8's real
+    matcher.assign.match_assets()."""
+    from matcher.assign import match_assets as run_match_assets
+
+    template = TemplateStore().get(template_id)
+    asset_store = AssetStore()
+    assets = [asset_store.get(asset_id) for asset_id in asset_ids]
+
+    binding_set = run_match_assets(template, assets, max_reuse=load_settings().max_asset_reuse_count)
+    return {
+        "proposed_bindings": [b.model_dump() for b in binding_set.bindings],
+        "unresolved_slots": binding_set.unresolved_slots,
+    }
 
 
 def bind(template_id: str, slot_to_asset: dict[str, str]) -> str:
-    """-> binding_id."""
-    raise NotImplementedError
+    """-> binding_id. Takes the user's final slot_id -> asset_id choices
+    (whether accepting match_assets()'s proposal verbatim or overriding
+    some slots) and persists a new BindingSet. Every slot in the template
+    NOT present in `slot_to_asset` is recorded as unresolved rather than
+    silently dropped - and still advances the timeline cursor by its own
+    nominal duration, so later bound slots land at the right position
+    (matcher.assign.build_binding()'s own contract)."""
+    from matcher.assign import build_binding
+
+    template = TemplateStore().get(template_id)
+    asset_store = AssetStore()
+
+    bindings = []
+    unresolved_slots = []
+    timeline_cursor_s = 0.0
+
+    for slot in template.slots:
+        asset_id = slot_to_asset.get(slot.slot_id)
+        if asset_id is None:
+            unresolved_slots.append(slot.slot_id)
+            timeline_cursor_s += slot.duration_s
+            continue
+
+        asset = asset_store.get(asset_id)
+        binding, snapped_duration_s = build_binding(
+            slot,
+            asset,
+            slot_start_s=timeline_cursor_s,
+            beat_grid_s=template.audio_ref.beat_grid_s,
+            median_cut_offset_frames=template.audio_ref.median_cut_offset_frames,
+            fps=template.source_fps,
+            confidence=1.0,  # explicit human choice, not a solver estimate
+            rationale=f"user-confirmed binding: slot {slot.slot_id!r} -> asset {asset_id!r}",
+        )
+        timeline_cursor_s += snapped_duration_s
+        bindings.append(binding)
+
+    binding_set = BindingSet(binding_id="unset", bindings=bindings, unresolved_slots=unresolved_slots)
+    return BindingStore().create(binding_set)  # create() assigns the real generated binding_id
 
 
 def preview(binding_id: str) -> str:

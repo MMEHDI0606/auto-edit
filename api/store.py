@@ -14,6 +14,7 @@ without needing a real Redis server running.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from typing import Callable, Generic, TypeVar
@@ -21,7 +22,8 @@ from typing import Callable, Generic, TypeVar
 import redis
 
 from common.config import load_settings
-from schemas.models import Template
+from matcher.probe import AssetFeatures
+from schemas.models import BindingSet, Template
 
 T = TypeVar("T")
 
@@ -143,3 +145,63 @@ class TemplateStore:
 
     def get(self, template_id: str) -> Template:
         return self._store.get(template_id)
+
+
+class AssetStore:
+    """asset_id -> AssetFeatures. AssetFeatures is a plain dataclass (see
+    matcher/probe.py), not a Pydantic model, so it needs its own
+    json.dumps/loads-based (de)serializer rather than TemplateStore's
+    model_dump_json()/model_validate_json()."""
+
+    def __init__(self, client: redis.Redis | None = None) -> None:
+        self._store: RedisJSONStore[AssetFeatures] = RedisJSONStore(
+            "asset",
+            serialize=lambda a: json.dumps(dataclasses.asdict(a)),
+            deserialize=lambda raw: AssetFeatures(**json.loads(raw)),
+            client=client,
+        )
+
+    def new_id(self) -> str:
+        # Exposed (unlike TemplateStore/BindingStore's create()-only
+        # pattern) because matcher.probe.extract_asset_features() itself
+        # takes asset_id as a parameter - register_assets() (Unit 4.3)
+        # needs the id BEFORE feature extraction can even run, not after.
+        return self._store.new_id()
+
+    def put(self, asset_id: str, features: AssetFeatures) -> None:
+        self._store.put(asset_id, features)
+
+    def create(self, features: AssetFeatures) -> str:
+        asset_id = self._store.new_id()
+        self._store.put(asset_id, features)
+        return asset_id
+
+    def get(self, asset_id: str) -> AssetFeatures:
+        return self._store.get(asset_id)
+
+
+class BindingStore:
+    """binding_id -> BindingSet. Also store-generated id as identity, same
+    as TemplateStore - BindingSet already carries its OWN binding_id field
+    (schemas/models.py), so this store's key and BindingSet.binding_id
+    must be kept in sync at write time (create() below does this)."""
+
+    def __init__(self, client: redis.Redis | None = None) -> None:
+        self._store: RedisJSONStore[BindingSet] = RedisJSONStore(
+            "binding",
+            serialize=lambda b: b.model_dump_json(),
+            deserialize=BindingSet.model_validate_json,
+            client=client,
+        )
+
+    def create(self, binding_set: BindingSet) -> str:
+        binding_id = self._store.new_id()
+        # BindingSet.binding_id must match the store key - construct a new
+        # BindingSet carrying the real generated id rather than trusting
+        # whatever id the caller happened to set on the object it built.
+        binding_set = binding_set.model_copy(update={"binding_id": binding_id})
+        self._store.put(binding_id, binding_set)
+        return binding_id
+
+    def get(self, binding_id: str) -> BindingSet:
+        return self._store.get(binding_id)
