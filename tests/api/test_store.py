@@ -88,7 +88,10 @@ def test_template_store_round_trip(fake_redis_server) -> None:
     store = TemplateStore()
 
     template_id = store.create(template)
-    assert store.get(template_id) == template
+    # create() syncs Template.template_id to the generated store key (Unit
+    # 4.3b) - the round-tripped object differs from the pre-persist input
+    # by exactly that one field.
+    assert store.get(template_id) == template.model_copy(update={"template_id": template_id})
 
 
 def test_template_store_get_unknown_id_raises(fake_redis_server) -> None:

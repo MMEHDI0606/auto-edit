@@ -226,6 +226,28 @@ def bind(template_id: str, slot_to_asset: dict[str, str]) -> str:
     return BindingStore().create(binding_set)  # create() assigns the real generated binding_id
 
 
+def adjust_template(template_id: str, changes: dict) -> dict:
+    """-> {"new_template_id": ...}. Thin wrapper (Unit 4.3b) - the actual
+    math lives in compiler.template.adjust_template(), a pure function
+    testable without a running server. Raises a clear validation error
+    (not a stack trace) on an unknown key or out-of-range value - both
+    TemplateAdjustment.__post_init__ and the unknown-top-level-key check
+    below raise plain ValueError."""
+    from compiler.template import adjust_template as run_adjust_template
+    from compiler.template import TemplateAdjustment
+
+    unknown_keys = set(changes) - {"global_duration_scale", "energy_bias", "slot_overrides"}
+    if unknown_keys:
+        raise ValueError(f"adjust_template: unknown key(s) {sorted(unknown_keys)} in changes")
+
+    adjustment = TemplateAdjustment(**changes)  # raises ValueError on out-of-range values
+
+    template = TemplateStore().get(template_id)
+    new_template = run_adjust_template(template, adjustment)
+    new_template_id = TemplateStore().create(new_template)
+    return {"new_template_id": new_template_id}
+
+
 def preview(binding_id: str) -> str:
     """-> storyboard PNG / short GIF URI."""
     raise NotImplementedError

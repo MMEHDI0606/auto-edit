@@ -566,6 +566,30 @@
       "title": "Template Version",
       "type": "string"
     },
+    "template_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Template Id"
+    },
+    "derived_from": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Derived From"
+    },
     "source_trace_hash": {
       "title": "Source Trace Hash",
       "type": "string"

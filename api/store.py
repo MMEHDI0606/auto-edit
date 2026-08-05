@@ -137,6 +137,9 @@ class TemplateStore:
 
     def create(self, template: Template) -> str:
         template_id = self._store.new_id()
+        # Template.template_id must match the store key - same pattern as
+        # BindingStore.create() syncing BindingSet.binding_id.
+        template = template.model_copy(update={"template_id": template_id})
         self._store.put(template_id, template)
         return template_id
 

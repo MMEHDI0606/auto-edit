@@ -376,6 +376,16 @@ class AudioRef(BaseModel):
 
 class Template(BaseModel):
     template_version: Literal["1.0"] = "1.0"
+    # Unit 4.3b: added for adjust_template()'s lineage tracking. Set at
+    # persist time (api.store.TemplateStore.create()) so the field and the
+    # store's own key stay in sync - a Template built in memory before
+    # being persisted (e.g. straight out of compile_template()) legitimately
+    # has template_id=None, same as BindingSet.binding_id's pattern.
+    template_id: Optional[str] = None
+    # An adjusted template is always a NEW template, never an in-place
+    # mutation of its source - this points at the source's template_id.
+    # None for an original (non-derived) template.
+    derived_from: Optional[str] = None
     source_trace_hash: str
     # GAP FOUND during Unit 3.8 (matcher/): pick_in_point()/match_assets()
     # need an fps to convert median_cut_offset_frames into seconds when
