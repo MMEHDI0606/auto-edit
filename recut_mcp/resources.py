@@ -71,7 +71,7 @@ def get_resource(uri: str) -> bytes:
 
 def load_prompt(name: str) -> str:
     """Reads one of the authored prompt files (mcp/prompts/{name}.md) -
-    used by mcp/server.py (Unit 4.6) to register each as an MCP prompt."""
+    used by recut_mcp/server.py (Unit 4.6) to register each as an MCP prompt."""
     if name not in PROMPT_NAMES:
         raise ValueError(f"unknown prompt {name!r}, expected one of {PROMPT_NAMES}")
     return (_PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")

@@ -657,3 +657,44 @@ actually evaluates against), and it does not fully satisfy Unit 1.19's
 text-layer-IoU gate on its own (§ note in `INSTRUCTIONS.md` Unit 1.19)
 since text/graphic-layer ground truth from a project file is best-effort
 at most.
+
+## 17. Renamed `mcp/` → `recut_mcp/` (Unit 4.6)
+
+**The problem.** `INSTRUCTIONS.md`'s Phase 4 sections (written before this
+was discovered) name this project's L6 package `mcp/` throughout — the
+scaffold followed that literally through Units 4.1–4.5. The official
+Anthropic/modelcontextprotocol Python SDK is *also* distributed on PyPI
+under the exact name `mcp`. Verified directly: with the local `mcp/`
+package sitting at the repo root (on `sys.path` for any normal `pytest`/
+CLI invocation run from the repo), `import mcp` always resolved to the
+local package — never the installed SDK — regardless of install order.
+`pip install mcp==2.0.0` succeeded, but `python -c "import mcp; print(mcp.__file__)"`
+still printed the local `mcp/__init__.py`. Unit 4.6 needs the real SDK's
+`mcp.server.MCPServer` for the stdio transport, so this was a hard
+blocker, not a style nit — the collision meant `recut_mcp/server.py`
+(then `mcp/server.py`) could never actually reach the SDK it needs to
+import, from inside a package sharing its own name.
+
+**The fix.** Renamed the local package `mcp/` → `recut_mcp/` (and its
+test directory `tests/mcp/` → `tests/recut_mcp/`), updated every import
+site (only test files and the package's own internal modules had real
+`from mcp.xxx import` statements — no other production module imported it
+directly, confirmed by grep before renaming), `pyproject.toml`'s
+`packages.find` include list, and the handful of docstring/comment
+mentions of the old path across `api/`, `compiler/`, `matcher/`, and
+`schemas/`. `INSTRUCTIONS.md` itself is left as-is (historical build
+guide, not re-generated) — the rename is recorded here instead, same
+treatment as every other place this scaffold's implementation had to
+diverge from the original written plan (e.g. the OTIO adapter package
+names in §16.1).
+
+**Why rename instead of a workaround.** Aliasing the import, manipulating
+`sys.path` order, or using `importlib` tricks to reach the "real" `mcp`
+from inside a same-named local package are all fragile and would need
+re-deriving at every call site that needs the SDK (and at every future
+contributor's fresh checkout). A rename is a one-time, mechanical fix that
+makes the collision structurally impossible going forward — `import mcp`
+now unambiguously means the SDK everywhere in this codebase, verified
+directly (`import recut_mcp.tools` and `import mcp as real_mcp` in the
+same process resolve to the local package and
+`.venv/Lib/site-packages/mcp/__init__.py` respectively).

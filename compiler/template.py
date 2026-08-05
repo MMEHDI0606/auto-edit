@@ -141,7 +141,7 @@ def _resnap_against_beat_grid(slots: list[Slot], template: Template) -> list[Slo
 
 
 def adjust_template(template: Template, changes: TemplateAdjustment) -> Template:
-    """Pure function - no MCP/business-logic mixed in (mcp.tools.adjust_template
+    """Pure function - no MCP/business-logic mixed in (recut_mcp.tools.adjust_template
     is the thin wrapper, Unit 4.3b). Returns a NEW Template
     (derived_from=template.template_id) - never mutates `template` in place.
     """

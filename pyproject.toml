@@ -61,6 +61,17 @@ matcher = [
                                # downloaded on first use). torch itself already comes in via the
                                # audio-sep (demucs) extra; not re-pinned here to avoid two conflicting pins.
 ]
+mcp-server = [
+    # Unit 4.6 - recut_mcp/server.py's stdio transport. NAMING NOTE: this
+    # project's own L6 package was originally named `mcp/` (matching
+    # INSTRUCTIONS.md's literal file paths), which collides with this
+    # exact PyPI package name - `import mcp` inside the project would
+    # always resolve to the LOCAL package, never this one, no matter the
+    # install order. Renamed the local package to recut_mcp/ (Unit 4.6)
+    # rather than working around the collision some other way - see
+    # DESIGN_NOTES.md.
+    "mcp==2.0.0",
+]
 golden-import = [
     "opentimelineio==0.18.1",  # core ships ONLY otio_json/otioz/otiod - fcp_xml/fcpx_xml/AAF are
                                # separate plugin packages below, NOT an "opentimelineio-contrib"
@@ -97,5 +108,5 @@ build-backend = "setuptools.build_meta"
 # would try to package them too. See DESIGN_NOTES.md repo layout.
 include = [
     "api*", "cli*", "common*", "compiler*", "eval*", "ingest*",
-    "matcher*", "mcp*", "render*", "schemas*", "semantics*", "signals*",
+    "matcher*", "recut_mcp*", "render*", "schemas*", "semantics*", "signals*",
 ]

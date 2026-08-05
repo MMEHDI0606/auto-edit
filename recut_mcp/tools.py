@@ -263,7 +263,7 @@ def _resolve_binding_asset_paths(binding_set: BindingSet) -> BindingSet:
     engine (built in Phase 2, before register_assets existed) treats
     asset_id as a directly-openable file path (see e.g.
     render/engines/ffmpeg_engine.py). Resolving ids to real paths HERE,
-    at the mcp.tools boundary, rather than inside render/ itself, keeps
+    at the recut_mcp.tools boundary, rather than inside render/ itself, keeps
     render/interface.py's own documented contract intact ("must be fully
     consumable through BindingSet alone... must never reach back into
     anything the template/bindings didn't already carry") - this is the

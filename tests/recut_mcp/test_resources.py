@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from api.store import JobStore, TemplateStore
-from mcp.resources import PROMPT_NAMES, get_resource, load_prompt
+from recut_mcp.resources import PROMPT_NAMES, get_resource, load_prompt
 from schemas.models import AudioRef, Template
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "synthetic_clip.mp4"
@@ -26,7 +26,7 @@ FIXTURE = Path(__file__).parent.parent / "fixtures" / "synthetic_clip.mp4"
 def test_get_resource_trace_returns_full_trace_bytes_for_completed_job(fake_redis_server) -> None:
     if not FIXTURE.exists():
         pytest.skip("run tests/fixtures/make_synthetic_clip.py first")
-    from mcp.tools import analyze_video
+    from recut_mcp.tools import analyze_video
 
     job_id = analyze_video(str(FIXTURE), depth="fast")["job_id"]
 

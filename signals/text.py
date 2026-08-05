@@ -22,7 +22,7 @@ Pipeline:
      "burned-in captions vs speech" mitigation) - this module must accept
      the transcript as an input, it cannot resolve that ambiguity alone.
 
-IMPORTANT (see mcp/tools.py and DESIGN_NOTES.md "untrusted OCR text"):
+IMPORTANT (see recut_mcp/tools.py and DESIGN_NOTES.md "untrusted OCR text"):
 every string returned here is UNTRUSTED INPUT (extracted from third-party
 video). This module's job is extraction, not sanitization - it must not
 attempt to interpret/execute anything in the string. Downstream consumers

@@ -220,7 +220,7 @@ class TextLayer(BaseModel):
     id: str
     t_in: NonNegativeFloat
     t_out: NonNegativeFloat
-    string: str = Field(..., description="OCR'd text - treat as UNTRUSTED, see mcp/tools.py")
+    string: str = Field(..., description="OCR'd text - treat as UNTRUSTED, see recut_mcp/tools.py")
     role: TextRole
     role_confidence: confloat(ge=0, le=1) = 1.0
     box: TextBox
@@ -434,7 +434,7 @@ class AssetBinding(BaseModel):
 
 class BindingSet(BaseModel):
     binding_id: str
-    # GAP FOUND during Unit 4.4 (mcp/tools.py): preview()/render() are
+    # GAP FOUND during Unit 4.4 (recut_mcp/tools.py): preview()/render() are
     # given only a binding_id (per their own stub signatures) but need the
     # source Template to actually render (RenderEngine.render() takes
     # template AND bindings) - BindingSet had no way to recover which

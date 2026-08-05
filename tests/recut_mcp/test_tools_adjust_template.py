@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from api.store import TemplateStore
-from mcp.tools import adjust_template
+from recut_mcp.tools import adjust_template
 from schemas.models import AudioRef, DurationFlex, MotionCurve, MotionPrimitive, Slot, SlotApplied, SlotRequirements, Template
 
 

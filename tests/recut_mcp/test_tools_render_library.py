@@ -18,7 +18,7 @@ import pytest
 
 from api.store import BindingStore, TemplateStore
 from common.config import load_settings
-from mcp.tools import (
+from recut_mcp.tools import (
     analyze_video,
     bind,
     get_job,

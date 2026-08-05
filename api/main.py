@@ -1,6 +1,6 @@
 """
 FastAPI app. Thin HTTP surface over the same job/pipeline primitives the
-MCP tool layer (mcp/tools.py) calls - both are clients of this module's
+MCP tool layer (recut_mcp/tools.py) calls - both are clients of this module's
 job-orchestration functions, neither contains business logic.
 
 Also the enforcement point for the "user-provided files and

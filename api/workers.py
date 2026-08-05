@@ -2,7 +2,7 @@
 Celery/RQ + Redis task definitions: analyze_video_task, render_task, etc.
 Each task wraps one pipeline stage (ingest -> signal -> semantics ->
 compiler, or matcher -> render) and writes progress into the job store so
-mcp.tools.get_job / get_render can poll it (spec sec 9.4: everything
+recut_mcp.tools.get_job / get_render can poll it (spec sec 9.4: everything
 long-running is async, MCP clients time out otherwise).
 """
 
@@ -41,7 +41,7 @@ def analyze_video_task(job_id: str, source: str, depth: str) -> None:
 def render_task(job_id: str, template_json: str, bindings_json: str, opts: dict) -> None:
     """`template`/`bindings` are passed pre-serialized (Celery tasks must
     only receive JSON-safe arguments, not live Pydantic objects) - the
-    caller (mcp.tools.render(), Unit 4.4) is responsible for the
+    caller (recut_mcp.tools.render(), Unit 4.4) is responsible for the
     template_id/binding_id -> object lookup before enqueueing."""
     job_store = JobStore()
     try:

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp.tools import analyze_video, get_job, get_trace, wrap_untrusted_text
+from recut_mcp.tools import analyze_video, get_job, get_trace, wrap_untrusted_text
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "synthetic_clip.mp4"
 

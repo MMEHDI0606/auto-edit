@@ -103,9 +103,9 @@ def build_binding(
     snapped_duration_s) - the caller advances its own timeline cursor by
     the returned duration, since only the caller knows whether it's
     iterating every slot in order (match_assets()) or a caller-supplied
-    subset (mcp.tools.bind(), Unit 4.3).
+    subset (recut_mcp.tools.bind(), Unit 4.3).
 
-    Shared by match_assets() (automatic proposals) and mcp.tools.bind()
+    Shared by match_assets() (automatic proposals) and recut_mcp.tools.bind()
     (user-confirmed/overridden picks) so the actual in-point/beat-snap
     math exists in exactly one place.
     """

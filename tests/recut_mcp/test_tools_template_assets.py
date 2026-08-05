@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from api.store import BindingStore, TemplateStore
-from mcp.tools import analyze_video, bind, describe_template, get_template, list_slots, match_assets, register_assets
+from recut_mcp.tools import analyze_video, bind, describe_template, get_template, list_slots, match_assets, register_assets
 from schemas.models import AudioRef, DurationFlex, MotionCurve, MotionPrimitive, Slot, SlotApplied, SlotRequirements, Template
 
 FACE_FIXTURE = Path(__file__).parent.parent / "fixtures" / "synthetic_face_clip.mp4"
