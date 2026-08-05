@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Literal
 
 from api.store import AssetStore, BindingStore, JobStore, TemplateStore
-from api.workers import analyze_video_task
+from api.workers import analyze_video_task, render_task
 from common.config import load_settings
 from schemas.models import BindingSet, EditTrace
 
@@ -222,7 +222,9 @@ def bind(template_id: str, slot_to_asset: dict[str, str]) -> str:
         timeline_cursor_s += snapped_duration_s
         bindings.append(binding)
 
-    binding_set = BindingSet(binding_id="unset", bindings=bindings, unresolved_slots=unresolved_slots)
+    binding_set = BindingSet(
+        binding_id="unset", template_id=template_id, bindings=bindings, unresolved_slots=unresolved_slots
+    )
     return BindingStore().create(binding_set)  # create() assigns the real generated binding_id
 
 
@@ -248,23 +250,99 @@ def adjust_template(template_id: str, changes: dict) -> dict:
     return {"new_template_id": new_template_id}
 
 
+def _template_for_binding(binding_set: BindingSet):
+    if binding_set.template_id is None:
+        raise ValueError(f"binding {binding_set.binding_id!r} has no associated template_id")
+    return TemplateStore().get(binding_set.template_id)
+
+
+def _resolve_binding_asset_paths(binding_set: BindingSet) -> BindingSet:
+    """BUG FOUND via testing: AssetBinding.asset_id, as produced by
+    bind()/match_assets(), is register_assets()'s OPAQUE generated
+    asset_id (matcher.probe.AssetFeatures.asset_id) - but every render
+    engine (built in Phase 2, before register_assets existed) treats
+    asset_id as a directly-openable file path (see e.g.
+    render/engines/ffmpeg_engine.py). Resolving ids to real paths HERE,
+    at the mcp.tools boundary, rather than inside render/ itself, keeps
+    render/interface.py's own documented contract intact ("must be fully
+    consumable through BindingSet alone... must never reach back into
+    anything the template/bindings didn't already carry") - this is the
+    one place that already talks to AssetStore, so the translation
+    belongs here, not inside a render engine."""
+    asset_store = AssetStore()
+    resolved_bindings = [
+        b.model_copy(update={"asset_id": asset_store.get(b.asset_id).asset_path}) for b in binding_set.bindings
+    ]
+    return binding_set.model_copy(update={"bindings": resolved_bindings})
+
+
 def preview(binding_id: str) -> str:
-    """-> storyboard PNG / short GIF URI."""
-    raise NotImplementedError
+    """-> storyboard PNG / short GIF URI (Unit 2.x's RenderEngine.preview(),
+    fast-iteration path per spec sec 7.3)."""
+    from render.interface import get_engine
+
+    binding_set = BindingStore().get(binding_id)
+    template = _template_for_binding(binding_set)
+    engine = get_engine(load_settings().primary_render_engine)
+    return str(engine.preview(template, _resolve_binding_asset_paths(binding_set)))
 
 
-def render(binding_id: str, include_audio: bool = False, resolution: tuple[int, int] = (1080, 1920), *, idempotency_key: str) -> dict:
-    """-> {job_id}. `idempotency_key` required - agents retry (sec 9.4)."""
-    raise NotImplementedError
+def render(
+    binding_id: str,
+    include_audio: bool = False,
+    resolution: tuple[int, int] = (1080, 1920),
+    *,
+    idempotency_key: str,
+) -> dict:
+    """-> {job_id}. `idempotency_key` required - agents retry (sec 9.4): a
+    retried call with the same key returns the EXISTING job rather than
+    enqueueing a duplicate render."""
+    job_store = JobStore()
+
+    existing_job_id = job_store.get_job_for_idempotency_key(idempotency_key)
+    if existing_job_id is not None:
+        return {"job_id": existing_job_id}
+
+    binding_set = BindingStore().get(binding_id)
+    template = _template_for_binding(binding_set)  # fail fast on a bad binding_id, before enqueueing anything
+
+    job_id = job_store.create()
+    job_store.set_idempotency_key(idempotency_key, job_id)
+
+    render_task.delay(
+        job_id,
+        template.model_dump_json(),
+        _resolve_binding_asset_paths(binding_set).model_dump_json(),
+        {"include_audio": include_audio, "resolution": list(resolution)},
+    )
+    return {"job_id": job_id}
 
 
 def get_render(job_id: str) -> dict:
-    """-> {url, render_report}."""
-    raise NotImplementedError
+    """-> {url, render_report}. render_report surfaces
+    RenderReport.approximations verbatim (spec sec 7.3)."""
+    job = JobStore().get(job_id)
+    if job["status"] != "done":
+        raise ValueError(f"job {job_id!r} is not done yet (status={job['status']!r}) - poll get_job first")
+
+    result_refs = job["result_refs"]
+    return {
+        "url": result_refs["output_path"],
+        "render_report": {"approximations": result_refs["approximations"]},
+    }
 
 
 def search_library(query: str, filters: dict | None = None) -> list[dict]:
     """Templates from the seeded library. See DESIGN_NOTES.md "Template
     library sourcing" for the v1 policy (user-analyzed only, no
-    pre-seeded third-party templates until legal sign-off)."""
-    raise NotImplementedError
+    pre-seeded third-party templates until legal sign-off) - this searches
+    only already-persisted (already-user-analyzed) templates in the local
+    TemplateStore; the actual seeded library is Phase 5's job."""
+    query_lower = query.lower().strip()
+    results = []
+    for template_id, template in TemplateStore().list_all():
+        haystack = " ".join(slot.human_instruction for slot in template.slots).lower()
+        if query_lower and query_lower not in haystack:
+            continue
+        results.append({"template_id": template_id, "slot_count": len(template.slots)})
+    return results

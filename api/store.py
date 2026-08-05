@@ -68,6 +68,13 @@ class RedisJSONStore(Generic[T]):
     def exists(self, id_: str) -> bool:
         return bool(self._client.exists(self._key(id_)))
 
+    def list_ids(self) -> list[str]:
+        """Unit 4.4 (search_library) - every id currently stored under
+        this prefix. Redis SCAN, not KEYS - safe against a large keyspace,
+        even though this store's own keyspace is small in v1."""
+        prefix = self._key("")
+        return [key[len(prefix):] for key in self._client.scan_iter(f"{prefix}*")]
+
 
 class JobStore:
     """job_id -> {status, progress, stage, error, result_refs}. The only
@@ -148,6 +155,13 @@ class TemplateStore:
 
     def get(self, template_id: str) -> Template:
         return self._store.get(template_id)
+
+    def list_all(self) -> list[tuple[str, Template]]:
+        """Unit 4.4 (search_library): every already-persisted (i.e.
+        already-user-analyzed) template - the v1 "search" scope per
+        DESIGN_NOTES.md's "user-analyzed only in v1" default, no seeded
+        third-party library until Phase 5."""
+        return [(template_id, self._store.get(template_id)) for template_id in self._store.list_ids()]
 
 
 class AssetStore:

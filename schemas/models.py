@@ -434,6 +434,13 @@ class AssetBinding(BaseModel):
 
 class BindingSet(BaseModel):
     binding_id: str
+    # GAP FOUND during Unit 4.4 (mcp/tools.py): preview()/render() are
+    # given only a binding_id (per their own stub signatures) but need the
+    # source Template to actually render (RenderEngine.render() takes
+    # template AND bindings) - BindingSet had no way to recover which
+    # template it was bound against. Set at bind()-time (Unit 4.3), where
+    # template_id is already in scope.
+    template_id: Optional[str] = None
     template_version: Literal["1.0"] = "1.0"
     bindings: list[AssetBinding]
     unresolved_slots: list[str] = Field(
