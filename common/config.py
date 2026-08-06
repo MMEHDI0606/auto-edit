@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     # to False via RECUT_CELERY_TASK_ALWAYS_EAGER=false.
     celery_task_always_eager: bool = True
 
+    # --- L6 hosted HTTP + OAuth (Unit 4.7, Phase 4b) ---
+    # No default password - deliberately unset. run_http_server() refuses
+    # to start (MissingAuthCredentialsError) rather than fall back to a
+    # hardcoded demo credential, unlike the MCP SDK's own example
+    # provider - this is real repository code, not a throwaway demo.
+    mcp_auth_username: str | None = None
+    mcp_auth_password: str | None = None
+    mcp_oauth_scope: str = "recut"
+
     # --- L5 render ---
     render_width: int = 1080
     render_height: int = 1920
